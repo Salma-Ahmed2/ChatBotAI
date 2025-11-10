@@ -30,14 +30,14 @@ def setup_logger(name: str) -> logging.Logger:
     os.makedirs(log_dir, exist_ok=True)
     
     # File handler for all logs
-    file_handler = logging.handlers.RotatingFileHandler(
-        os.path.join(log_dir, "chatbot.log"),
-        maxBytes=10485760,  # 10MB
-        backupCount=5,
-        encoding="utf-8"
-    )
-    file_handler.setFormatter(logging.Formatter(Config.LOG_FORMAT))
-    logger.addHandler(file_handler)
+    # file_handler = logging.handlers.RotatingFileHandler(
+    #     os.path.join(log_dir, "chatbot.log"),
+    #     maxBytes=10485760,  # 10MB
+    #     backupCount=5,
+    #     encoding="utf-8"
+    # )
+    # file_handler.setFormatter(logging.Formatter(Config.LOG_FORMAT))
+    # logger.addHandler(file_handler)
     
     # Console handler for debugging
     if Config.DEBUG:
