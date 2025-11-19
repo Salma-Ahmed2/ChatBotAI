@@ -358,6 +358,7 @@ def _pick_package_fields(pkg: Dict[str, Any]) -> Dict[str, Any]:
         "contractDurationName": pkg.get("contractDurationName"),
         "visitShiftName": pkg.get("visitShiftName"),
         "timeSlotDisplayName": pkg.get("timeSlotDisplayName"),
+        "visitHours": pkg.get("visitHours"),
         "promotionCodeDescription": pkg.get("promotionCodeDescription"),
     }
 

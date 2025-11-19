@@ -6,7 +6,8 @@ configuring logging, and initializing required services.
 from app_pkg import create_app
 from app_pkg.logger import setup_logger
 from config import Config
-
+import google.generativeai as genai
+genai.configure(api_key="AIzaSyDELy4zDPmU7YWxm2E-EdNorM4FroYaA4Y")
 # Set up application-level logger
 logger = setup_logger(__name__)
 
