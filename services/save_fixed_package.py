@@ -373,6 +373,7 @@ def _pick_package_fields(pkg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "displayName": pkg.get("displayName"),
         "packagePrice": pkg.get("packagePrice"),
+        "promotionCode": pkg.get("promotionCode"),
         "resourceGroupName": pkg.get("resourceGroupName"),
         "employeeNumberName": pkg.get("employeeNumberName"),
         "weeklyVisitName": pkg.get("weeklyVisitName"),
@@ -499,10 +500,11 @@ def format_single_package(pkg: Dict[str, Any]) -> str:
 مدة العقد: {pkg.get("contractDurationName")}
 موعد الزيارة: {pkg.get("visitShiftName")}
 عدد ساعات الزيارة: {pkg.get("visitHours")}
+كود الخصم: {pkg.get("promotionCode")}
 الوصف: {pkg.get("promotionCodeDescription") or "—"}
 """.strip()
 def handle_package_selection(choice: str) -> str:
-    """معالجة اختيار الباقة بناءً على رقم، وحفظها في fixedPackage.json"""
+    """معالجة اختيار الباقة بناءً على رقم، وحفظها في fixedPackage.json وuser_data.json"""
     try:
         index = int(choice.strip()) - 1
     except Exception:
@@ -516,9 +518,10 @@ def handle_package_selection(choice: str) -> str:
         return "⚠️ الرقم خارج نطاق الباقات المتاحة."
 
     selected = packages[index]
-    msg = format_single_package(selected)
+    msg = format_single_package(selected)  # هذا لا يعرض selectedHourlyPricingId
 
     try:
+        # حفظ الباقة كاملة في fixedPackage.json
         saved = save_selected_package(selected)
         if saved:
             LOGGER.info("✅ تم حفظ الباقة المختارة داخل fixedPackage.json")
@@ -527,16 +530,25 @@ def handle_package_selection(choice: str) -> str:
     except Exception as e:
         LOGGER.warning("⚠️ خطأ عند حفظ الباقة المختارة: %s", e)
 
-    # حاول تحديث pending_query داخل user_data.json (ليس حرجًا إن فشل)
+    # حفظ selectedHourlyPricingId في user_data.json
     try:
         from .user_info_manager import load_user_data, save_user_data
+        ud = load_user_data()
+        ud["selectedHourlyPricingId"] = selected.get("selectedHourlyPricingId")
+        save_user_data(ud)
+        LOGGER.info("✅ تم حفظ selectedHourlyPricingId في user_data.json")
+    except Exception as e:
+        LOGGER.warning("⚠️ خطأ عند حفظ selectedHourlyPricingId في user_data.json: %s", e)
+
+    # تحديث pending_query داخل user_data.json (ليس حرجًا إن فشل)
+    try:
         ud = load_user_data()
         ud["pending_query"] = "الباقات"
         save_user_data(ud)
     except Exception as e:
         LOGGER.warning("⚠️ خطأ في تحديث pending_query داخل user_data.json: %s", e)
 
-    # جلب TimeSlot وإعداد رسالة مناسبة (نضمن وجود رسالة دائمًا)
+    # جلب TimeSlot وإعداد رسالة مناسبة
     try:
         slots = call_time_slot_api()
         if slots is None:
@@ -550,8 +562,7 @@ def handle_package_selection(choice: str) -> str:
     return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}\n\n{slot_msg}"
 
 def call_time_slot_api() -> Optional[List[Dict[str, Any]]]:
-    """استدعاء API لجلب TimeSlot بعد اختيار الباقة"""
-
+    """استدعاء API لجلب TimeSlot بعد اختيار الباقة وحفظ المفتاح داخليًا"""
     try:
         pkg = read_fixed_package()
 
@@ -577,7 +588,7 @@ def call_time_slot_api() -> Optional[List[Dict[str, Any]]]:
             "hours": str(hours)
         }
 
-        from .user_info_manager import load_user_data
+        from .user_info_manager import load_user_data, save_user_data
         ud = load_user_data()
         token = ud.get("auth_token")
 
@@ -590,7 +601,16 @@ def call_time_slot_api() -> Optional[List[Dict[str, Any]]]:
         resp = requests.post(url, json=body, headers=headers, timeout=10)
 
         if resp.status_code == 200:
-            return resp.json().get("data", [])
+            data = resp.json().get("data", [])
+
+            # حفظ كل مفاتيح TimeSlot داخليًا بدون عرضها للعميل
+            keys = [slot.get("key") for slot in data if "key" in slot]
+            if keys:
+                ud["time_slot_keys"] = keys
+                save_user_data(ud)
+                LOGGER.info("✅ تم حفظ TimeSlot keys داخل user_data.json")
+
+            return data
         else:
             LOGGER.warning("⚠️ TimeSlot API status code: %s", resp.status_code)
             return None
@@ -598,6 +618,7 @@ def call_time_slot_api() -> Optional[List[Dict[str, Any]]]:
     except Exception as exc:
         LOGGER.warning("⚠️ خطأ في استدعاء TimeSlot API: %s", exc)
         return None
+
 def format_timeslot_message(slots: List[Dict[str, Any]]) -> str:
     if not slots:
         return "⚠️ لا توجد مواعيد متاحة لهذا الوقت."
@@ -608,4 +629,8 @@ def format_timeslot_message(slots: List[Dict[str, Any]]) -> str:
         msg += f"{slot.get('value')}\n"
         msg += f"المدة المتاحة من :\n{slot.get('minDate')}\n إلى \n {slot.get('maxDate')}\n\n"
 
+    msg += "من فضلك اختر التاريخ المناسب ويكون صياغته بهذا الشكل 29/12/2030."
+
     return msg.strip()
+
+
