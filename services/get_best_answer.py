@@ -39,6 +39,7 @@ from .save_fixed_package import (
     get_available_shifts,
     get_available_nationalities,
     read_fixed_package,
+    handle_package_selection,
     FIXED_PACKAGE_PATH,
 )
 
@@ -51,8 +52,18 @@ CITYDISTRICT_API = "https://erp.rnr.sa:8005/ar/api/city/CityDistricts?cityId"
 def get_best_answer(user_input):
     user_data = load_user_data()
 
-    # نطبع نسخة مُطَبَّعة من السؤال مبكراً لاستخدامها في اكتشاف الخدمات
+    # نطبع نسخة مُطَبَّعة من السؤال مبكراً لاستخدامها في اكتشاف الخدمات
     normalized_q = normalize_ar(user_input)
+
+    # -----------------------
+    # 🟡 سايكل الباقات - معالجة اختيار الباقة
+    # -----------------------
+    try:
+        if user_data.get("pending_query") == "الباقات":
+            if user_input.strip().isdigit():  # المستخدم دخل رقم
+                return handle_package_selection(user_input)
+    except Exception as e:
+        LOGGER.warning("⚠️ خطأ أثناء معالجة اختيار الباقة: %s", e)
 
     # -----------------------
     # معالجة اختيار نوع السكن عندما ننتظر هذا الحقل

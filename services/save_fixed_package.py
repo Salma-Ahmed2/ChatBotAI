@@ -436,6 +436,15 @@ def handle_shift_selection(choice: str, shifts: List[Dict[str, Any]]) -> str:
             try:
                 # محاولة استدعاء API الباقات
                 packages = call_fixed_package_api()
+                # تحديث user_data.json وإضافة pending_query = الباقات
+                try:
+                    from .user_info_manager import load_user_data, save_user_data
+                    ud = load_user_data()
+                    ud["pending_query"] = "الباقات"
+                    save_user_data(ud)
+                except Exception as e:
+                    LOGGER.warning("⚠️ خطأ في تحديث pending_query داخل user_data.json: %s", e)
+
                 packages_msg = format_packages_message(packages) if packages is not None else "⚠️ تعذر جلب بيانات الباقات."
                 # حاول أيضاً حفظ/إرسال العنوان كما كان سابقاً (إن أمكن)
                 try:
@@ -455,3 +464,39 @@ def handle_shift_selection(choice: str, shifts: List[Dict[str, Any]]) -> str:
     except Exception as exc:
         LOGGER.warning("⚠️ خطأ في معالجة اختيار الموعد: %s", exc)
         return "⚠️ حدث خطأ في معالجة اختيار الموعد"
+    
+def format_single_package(pkg: Dict[str, Any]) -> str:
+    """عرض باقة واحدة بشكل واضح"""
+    if not pkg:
+        return "⚠️ الباقة غير موجودة."
+
+    return f"""
+اسم الباقة: {pkg.get("displayName")}
+السعر: {pkg.get("packagePrice")}
+عدد الموظفين: {pkg.get("employeeNumberName")}
+عدد الزيارات الأسبوعية: {pkg.get("weeklyVisitName")}
+مدة العقد: {pkg.get("contractDurationName")}
+موعد الزيارة: {pkg.get("visitShiftName")}
+عدد ساعات الزيارة: {pkg.get("visitHours")}
+الوصف: {pkg.get("promotionCodeDescription") or "—"}
+""".strip()
+def handle_package_selection(choice: str) -> str:
+    """معالجة اختيار الباقة بناءً على رقم"""
+    try:
+        # نتأكد إن المستخدم دخل رقم
+        index = int(choice.strip()) - 1
+    except:
+        return "⚠️ من فضلك ادخل رقم صحيح لاختيار الباقة."
+
+    packages = call_fixed_package_api()
+    if not packages:
+        return "⚠️ لا توجد باقات متاحة حالياً."
+
+    if index < 0 or index >= len(packages):
+        return "⚠️ الرقم خارج نطاق الباقات المتاحة."
+
+    selected = packages[index]
+    msg = format_single_package(selected)
+
+    # ممكن هنا تحفظي الباقة المختارة في fixedPackage.json أو pending_query جديد
+    return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}"
