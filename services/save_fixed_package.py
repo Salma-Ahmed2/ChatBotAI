@@ -505,7 +505,7 @@ def handle_package_selection(choice: str) -> str:
     """معالجة اختيار الباقة بناءً على رقم، وحفظها في fixedPackage.json"""
     try:
         index = int(choice.strip()) - 1
-    except:
+    except Exception:
         return "⚠️ من فضلك ادخل رقم صحيح لاختيار الباقة."
 
     packages = call_fixed_package_api()
@@ -518,19 +518,94 @@ def handle_package_selection(choice: str) -> str:
     selected = packages[index]
     msg = format_single_package(selected)
 
-    # ⭐ حفظ الباقة داخل fixedPackage.json
-    if save_selected_package(selected):
-        LOGGER.info("✅ تم حفظ الباقة المختارة داخل fixedPackage.json")
-    else:
-        LOGGER.warning("⚠️ لم يتم حفظ الباقة المختارة")
+    try:
+        saved = save_selected_package(selected)
+        if saved:
+            LOGGER.info("✅ تم حفظ الباقة المختارة داخل fixedPackage.json")
+        else:
+            LOGGER.warning("⚠️ لم يتم حفظ الباقة المختارة")
+    except Exception as e:
+        LOGGER.warning("⚠️ خطأ عند حفظ الباقة المختارة: %s", e)
 
-    # ⭐ تغيير pending_query لأنها خلصت
+    # حاول تحديث pending_query داخل user_data.json (ليس حرجًا إن فشل)
     try:
         from .user_info_manager import load_user_data, save_user_data
         ud = load_user_data()
-        ud["pending_query"] = "package_selected"
+        ud["pending_query"] = "الباقات"
         save_user_data(ud)
-    except:
-        pass
+    except Exception as e:
+        LOGGER.warning("⚠️ خطأ في تحديث pending_query داخل user_data.json: %s", e)
 
-    return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}"
+    # جلب TimeSlot وإعداد رسالة مناسبة (نضمن وجود رسالة دائمًا)
+    try:
+        slots = call_time_slot_api()
+        if slots is None:
+            slot_msg = "⚠️ لم نتمكن من جلب المواعيد."
+        else:
+            slot_msg = format_timeslot_message(slots)
+    except Exception as e:
+        LOGGER.warning("⚠️ خطأ عند جلب TimeSlot: %s", e)
+        slot_msg = "⚠️ حدث خطأ أثناء جلب المواعيد."
+
+    return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}\n\n{slot_msg}"
+
+def call_time_slot_api() -> Optional[List[Dict[str, Any]]]:
+    """استدعاء API لجلب TimeSlot بعد اختيار الباقة"""
+
+    try:
+        pkg = read_fixed_package()
+
+        service_id = pkg.get("service_id")
+        step_id = pkg.get("stepId")
+        shift = pkg.get("shift_key")
+        selected_pkg = pkg.get("selected_package")
+
+        if not service_id or not step_id or shift is None or not selected_pkg:
+            LOGGER.warning("⚠️ بيانات ناقصة لجلب TimeSlot")
+            return None
+
+        hours = selected_pkg.get("visitHours")
+        if not hours:
+            LOGGER.warning("⚠️ visitHours غير موجودة داخل selected_package")
+            return None
+
+        url = "https://erp.rnr.sa:8005/ar/api/HourlyTimeSlot/GetTimeSlotByServiceIdForDDL"
+        body = {
+            "serviceId": service_id,
+            "stepId": step_id,
+            "shift": str(shift),
+            "hours": str(hours)
+        }
+
+        from .user_info_manager import load_user_data
+        ud = load_user_data()
+        token = ud.get("auth_token")
+
+        headers = {
+            "Authorization": token,
+            "content-type": "application/json"
+        }
+
+        LOGGER.info("📡 استدعاء TimeSlot API: %s", body)
+        resp = requests.post(url, json=body, headers=headers, timeout=10)
+
+        if resp.status_code == 200:
+            return resp.json().get("data", [])
+        else:
+            LOGGER.warning("⚠️ TimeSlot API status code: %s", resp.status_code)
+            return None
+
+    except Exception as exc:
+        LOGGER.warning("⚠️ خطأ في استدعاء TimeSlot API: %s", exc)
+        return None
+def format_timeslot_message(slots: List[Dict[str, Any]]) -> str:
+    if not slots:
+        return "⚠️ لا توجد مواعيد متاحة لهذا الوقت."
+
+    msg = "⏰ المواعيد المتاحة:\n\n"
+
+    for i, slot in enumerate(slots, start=1):
+        msg += f"{slot.get('value')}\n"
+        msg += f"المدة المتاحة من :\n{slot.get('minDate')}\n إلى \n {slot.get('maxDate')}\n\n"
+
+    return msg.strip()
