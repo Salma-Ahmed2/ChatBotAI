@@ -192,6 +192,27 @@ def save_fixed_package(service_data: Dict[str, Any]) -> Any:
         LOGGER.warning("⚠️ خطأ في حفظ الخدمة المختارة: %s", exc)
         return False
 
+def save_selected_package(package: Dict[str, Any]) -> bool:
+    """حفظ الباقة المختارة داخل fixedPackage.json"""
+    try:
+        data = {
+            "selected_package": {
+                "displayName": package.get("displayName"),
+                "packagePrice": package.get("packagePrice"),
+                "resourceGroupName": package.get("resourceGroupName"),
+                "employeeNumberName": package.get("employeeNumberName"),
+                "weeklyVisitName": package.get("weeklyVisitName"),
+                "contractDurationName": package.get("contractDurationName"),
+                "visitShiftName": package.get("visitShiftName"),
+                "timeSlotDisplayName": package.get("timeSlotDisplayName"),
+                "visitHours": package.get("visitHours"),
+                "promotionCodeDescription": package.get("promotionCodeDescription"),
+            }
+        }
+        return write_fixed_package(data)
+    except Exception as exc:
+        LOGGER.warning("⚠️ خطأ في حفظ الباقة المختارة: %s", exc)
+        return False
 
 def get_available_nationalities(service_id: Any) -> Optional[List[Dict[str, Any]]]:
     """جلب الجنسيات المتاحة للخدمة from remote API.
@@ -481,9 +502,8 @@ def format_single_package(pkg: Dict[str, Any]) -> str:
 الوصف: {pkg.get("promotionCodeDescription") or "—"}
 """.strip()
 def handle_package_selection(choice: str) -> str:
-    """معالجة اختيار الباقة بناءً على رقم"""
+    """معالجة اختيار الباقة بناءً على رقم، وحفظها في fixedPackage.json"""
     try:
-        # نتأكد إن المستخدم دخل رقم
         index = int(choice.strip()) - 1
     except:
         return "⚠️ من فضلك ادخل رقم صحيح لاختيار الباقة."
@@ -498,5 +518,19 @@ def handle_package_selection(choice: str) -> str:
     selected = packages[index]
     msg = format_single_package(selected)
 
-    # ممكن هنا تحفظي الباقة المختارة في fixedPackage.json أو pending_query جديد
+    # ⭐ حفظ الباقة داخل fixedPackage.json
+    if save_selected_package(selected):
+        LOGGER.info("✅ تم حفظ الباقة المختارة داخل fixedPackage.json")
+    else:
+        LOGGER.warning("⚠️ لم يتم حفظ الباقة المختارة")
+
+    # ⭐ تغيير pending_query لأنها خلصت
+    try:
+        from .user_info_manager import load_user_data, save_user_data
+        ud = load_user_data()
+        ud["pending_query"] = "package_selected"
+        save_user_data(ud)
+    except:
+        pass
+
     return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}"
