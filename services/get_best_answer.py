@@ -64,7 +64,6 @@ def get_best_answer(user_input):
                 return handle_package_selection(user_input)
     except Exception as e:
         LOGGER.warning("⚠️ خطأ أثناء معالجة اختيار الباقة: %s", e)
-
     # -----------------------
     # معالجة اختيار نوع السكن عندما ننتظر هذا الحقل
     # -----------------------
@@ -333,6 +332,30 @@ def get_best_answer(user_input):
 
             # إذا كتب المستخدم شيئًا يبدو كسؤال عن الحقل (مثل 'ما اسمك؟')، نتجاهل هذا الجزء من التخزين
 
+    # =====================
+    # حالة إدخال تاريخ مبكراً: (مثال: 25/11/2025)
+    # ضع هذا الكشف قبل أي فحص للاختيارات الرقمية حتى لا تُفسَّر التواريخ كأرقام خدمات
+    try:
+        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        date_candidate = user_input.translate(trans).strip()
+        # تقبل صيغ dd/mm/yyyy أو dd-mm-yyyy أو dd.mm.yyyy أو dd mm yyyy
+        if re.fullmatch(r"\d{1,2}[\/\-\.\s]\d{1,2}[\/\-\.\s]\d{2,4}", date_candidate):
+            ud = load_user_data()
+            if ud.get("pending_query") == "timeslot_date":
+                try:
+                    from .save_fixed_package import fetch_available_days, format_available_days_message
+                    days = fetch_available_days(date_candidate)
+                    if not days:
+                        return "⚠️ لم نتمكن من جلب الأيام المتاحة لهذا التاريخ. حاول تاريخاً آخر أو أعد المحاولة لاحقاً."
+                    ud["pending_query"] = "preferred_days"
+                    save_user_data(ud)
+                    return format_available_days_message(days)
+                except Exception as e:
+                    LOGGER.warning("⚠️ خطأ أثناء جلب الأيام المتاحة: %s", e)
+                    return "⚠️ حدث خطأ أثناء جلب الأيام المتاحة. حاول مرة أخرى لاحقاً."
+    except Exception as e:
+        LOGGER.debug("⚠️ تجاهل خطأ في التحقق المبكر من التاريخ: %s", e)
+
     # If the user input is just a number (Arabic-Indic or Western numerals), treat it as a selection
     trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
     normalized_digits = normalized_q.translate(trans).strip()
@@ -446,6 +469,54 @@ def get_best_answer(user_input):
         except Exception as exc:
             LOGGER.warning("⚠️ خطأ أثناء معالجة اختيار الموعد: %s", exc)
             return "⚠️ حدث خطأ أثناء معالجة اختيار الموعد. حاول مرة أخرى لاحقاً."
+
+    # حالة إدخال تاريخ (مثال: 25/11/2025) - نُعالِجها عندما كنا ننتظر تاريخ بداية العقد
+    try:
+        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        date_candidate = user_input.translate(trans).strip()
+        # تقبل صيغ dd/mm/yyyy أو dd-mm-yyyy
+        if re.fullmatch(r"\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}", date_candidate):
+            ud = load_user_data()
+            if ud.get("pending_query") == "timeslot_date":
+                try:
+                    from .save_fixed_package import fetch_available_days, format_available_days_message
+                    days = fetch_available_days(date_candidate)
+                    if not days:
+                        return "⚠️ لم نتمكن من جلب الأيام المتاحة لهذا التاريخ. حاول تاريخاً آخر أو أعد المحاولة لاحقاً."
+                    # نضع العلم أننا الآن في سايكل اختيار الأيام المفضلة
+                    ud["pending_query"] = "preferred_days"
+                    save_user_data(ud)
+                    return format_available_days_message(days)
+                except Exception as e:
+                    LOGGER.warning("⚠️ خطأ أثناء جلب الأيام المتاحة: %s", e)
+                    return "⚠️ حدث خطأ أثناء جلب الأيام المتاحة. حاول مرة أخرى لاحقاً."
+    except Exception as e:
+        LOGGER.debug("⚠️ تجاهل خطأ في التحقق من التاريخ: %s", e)
+
+    # حالة اختيار الأيام المفضلة بعد عرضها (مثل: 1 3)
+    try:
+        ud = load_user_data()
+        if ud.get("pending_query") == "preferred_days":
+            trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+            nums = re.findall(r"\d+", user_input.translate(trans))
+            if nums:
+                chosen = [int(n) for n in nums]
+                try:
+                    from .save_fixed_package import select_preferred_days
+                    sel = select_preferred_days(chosen)
+                    if not sel:
+                        return "⚠️ لم نتمكن من حفظ الأيام المفضلة. حاول اختيار أرقام صحيحة من القائمة." 
+                    # نزيل العلم بعد الحفظ
+                    ud.pop("pending_query", None)
+                    save_user_data(ud)
+                    lines = [f"- {d.get('dayName')} ({d.get('date')})" for d in sel]
+                    return "✅ تم حفظ الأيام المفضلة بنجاح:\n" + "\n".join(lines)
+                except Exception as e:
+                    LOGGER.warning("⚠️ خطأ أثناء حفظ الأيام المفضلة: %s", e)
+                    return "⚠️ حدث خطأ أثناء معالجة اختيار الأيام المفضلة. حاول مرة أخرى لاحقاً."
+    except Exception as e:
+        LOGGER.debug("⚠️ تجاهل خطأ أثناء معالجة الأيام المفضلة: %s", e)
+
 
     original_text = user_input
     answer = ""

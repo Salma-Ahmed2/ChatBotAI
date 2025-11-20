@@ -6,6 +6,7 @@ the original Arabic messages and function signatures.
 """
 
 from typing import Any, Dict, List, Optional
+import re
 import json
 import os
 import time
@@ -28,6 +29,49 @@ def _normalize_arabic_digits(s: str) -> str:
     trans = {chr(0x0660 + i): str(i) for i in range(10)}
     trans.update({chr(0x06F0 + i): str(i) for i in range(10)})
     return s.translate(str.maketrans(trans))
+
+
+def _extract_numeric_value(val: Any) -> Optional[str]:
+    """
+    يحاول استخراج رقم من الجملة بناءً على:
+    - الأرقام المكتوبة (عربية/إنجليزية)
+    - الأنماط اللغوية الشائعة مثل "عاملة واحدة"، "عاملتين"، "مرة واحدة"
+    - بدون الاعتماد على الكلمات البسيطة فقط
+    """
+
+    if val is None:
+        return None
+    
+    text = str(val).strip()
+    text = _normalize_arabic_digits(text)
+
+    import re
+
+    # 1) لو فيه رقم مكتوب مباشرة
+    m = re.search(r"(\d+)", text)
+    if m:
+        return m.group(1)
+
+    # 2) فهم الجمل الشائعة (NLP بسيط)
+    patterns = {
+        r"(عاملة\s*واحدة|عامله\s*واحده|واحدة\s*عاملة)": "1",
+        r"(عامل\s*واحد|عاملة\s*واحد)": "1",
+        r"(عاملتين|عامليْن|عاملان|عامِلان)": "2",
+        r"(مرتين|مرتان)": "2",
+        r"(ثلاث\s*عاملات|ثلاث\s*زيارات|ثلاث)": "3",
+        r"(اربع\s*عاملات|اربعة\s*عاملات|اربعة)": "4",
+        r"(خمسة\s*عاملات|خمس\s*عاملات|خمسة)": "5",
+        r"(مرة\s*واحدة)": "1",
+        r"(مرة\s*ثانية)": "2",
+        r"(نص\s*ساعة|نصف\s*ساعة)": "30",
+        r"(ربع\s*ساعة)": "15",
+    }
+
+    for pattern, num in patterns.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return num
+
+    return None
 
 
 FIXED_PACKAGE_PATH = os.path.join(os.path.dirname(__file__), "..", "fixedPackage.json")
@@ -503,6 +547,7 @@ def format_single_package(pkg: Dict[str, Any]) -> str:
 كود الخصم: {pkg.get("promotionCode")}
 الوصف: {pkg.get("promotionCodeDescription") or "—"}
 """.strip()
+
 def handle_package_selection(choice: str) -> str:
     """معالجة اختيار الباقة بناءً على رقم، وحفظها في fixedPackage.json وuser_data.json"""
     try:
@@ -558,6 +603,13 @@ def handle_package_selection(choice: str) -> str:
     except Exception as e:
         LOGGER.warning("⚠️ خطأ عند جلب TimeSlot: %s", e)
         slot_msg = "⚠️ حدث خطأ أثناء جلب المواعيد."
+        try:
+            from .user_info_manager import load_user_data, save_user_data
+            ud = load_user_data()
+            ud["pending_query"] = "timeslot_date"
+            save_user_data(ud)
+        except Exception as e:
+            LOGGER.warning("⚠️ خطأ في تحديث pending_query للمرحلة timeslot_date: %s", e)
 
     return f"✅ تم اختيار الباقة رقم {choice}\n\n{msg}\n\n{slot_msg}"
 
@@ -623,6 +675,16 @@ def format_timeslot_message(slots: List[Dict[str, Any]]) -> str:
     if not slots:
         return "⚠️ لا توجد مواعيد متاحة لهذا الوقت."
 
+    # عند عرض المواعيد نضع العلم بأننا ننتظر اختيار تاريخ بداية العقد
+    try:
+        from .user_info_manager import load_user_data, save_user_data
+        ud = load_user_data()
+        ud["pending_query"] = "timeslot_date"
+        save_user_data(ud)
+    except Exception:
+        # لا نوقف التنفيذ إن فشل تحديث الحالة
+        pass
+
     msg = "⏰ المواعيد المتاحة:\n\n"
 
     for i, slot in enumerate(slots, start=1):
@@ -632,5 +694,173 @@ def format_timeslot_message(slots: List[Dict[str, Any]]) -> str:
     msg += "من فضلك اختر التاريخ المناسب ويكون صياغته بهذا الشكل 29/12/2030."
 
     return msg.strip()
+def fetch_available_days(contract_start_date: str) -> Optional[List[Dict[str, str]]]:
+    """
+    جلب الأيام المتاحة بعد إدخال تاريخ بداية العقد.
+    يعتمد على stepId الموجود في fixedpackage.json.
+    ويستخدم:
+    - selectedHourlyPricingId من user_data.json
+    - serviceId و resourceGroupId من fixedpackage.json
+    - days = أول 5 أيام متتالية تبدأ من تاريخ العقد المختار
+    """
+    import datetime
 
+    try:
+        # ---- تحميل fixedPackage.json ----
+        pkg = read_fixed_package()
+        if not pkg:
+            LOGGER.warning("⚠️ fixedPackage.json فارغ أو غير موجود")
+            return None
+
+        step_id = pkg.get("stepId")
+        selected_pkg = pkg.get("selected_package")
+        shift = pkg.get("shift_key")
+        time_slot_id = pkg.get("time_slot_id")
+
+        if not selected_pkg:
+            LOGGER.warning("⚠️ selected_package غير موجود داخل fixedPackage.json")
+            return None
+
+        # ---- تحميل user_data.json ----
+        from .user_info_manager import load_user_data, save_user_data
+        ud = load_user_data()
+        token = ud.get("auth_token")
+
+        # جلب selectedHourlyPricingId من user_data.json
+        user_selected_pricing_id = ud.get("selectedHourlyPricingId")
+        time_slot_keys = ud.get("time_slot_keys") or []
+
+        # ---- إنشاء DAYS: 5 أيام متتالية ----
+        day, month, year = map(int, contract_start_date.split("/"))
+        start_date = datetime.date(year, month, day)
+
+        five_days = []
+        for i in range(5):
+            d = start_date + datetime.timedelta(days=i)
+            five_days.append(d.strftime("%A"))  # اسم اليوم بالإنجليزي
+
+        days_str = ",".join(five_days)
+
+        # ---- تجهيز الرابط ----
+        url = f"https://erp.rnr.sa:8005/ar/api/HourlyPricing/AvailableDaysWithDate?stepId={step_id}"
+
+        # ---- تجهيز الـ PAYLOAD الصحيح ----
+        # Determine a safe timeSlotId: prefer saved time_slot_keys, fallback to any
+        # time_slot_id present in fixedPackage.json, otherwise None.
+        chosen_time_slot_id = None
+        if isinstance(time_slot_keys, (list, tuple)) and len(time_slot_keys) > 0:
+            chosen_time_slot_id = time_slot_keys[0]
+        elif time_slot_id:
+            chosen_time_slot_id = time_slot_id
+
+        if not chosen_time_slot_id:
+            LOGGER.warning("⚠️ لم يتم العثور على timeSlotId في user_data أو fixedPackage.json")
+
+        # Normalize fields to have numbers only where expected
+        contract_duration_num = _extract_numeric_value(selected_pkg.get("contractDurationName")) or _extract_numeric_value(selected_pkg.get("contractDuration"))
+        hours_count_num = _extract_numeric_value(selected_pkg.get("visitHours")) or _extract_numeric_value(selected_pkg.get("hoursCount")) or str(selected_pkg.get("visitHours") or "")
+        empcount_num = _extract_numeric_value(selected_pkg.get("employeeNumberName")) or _extract_numeric_value(selected_pkg.get("employeeNumber"))
+        weeklyvisits_num = _extract_numeric_value(selected_pkg.get("weeklyVisitName")) or _extract_numeric_value(selected_pkg.get("weeklyvisits"))
+
+        payload = {
+            "selectedHourlyPricingId": user_selected_pricing_id,                # من user_data.json
+            "resourceGroupId": pkg.get("nationality_key"),                      # من fixedPackage.json
+            "serviceId": pkg.get("service_id"),                                 # من fixedPackage.json
+            "contractStartDate": contract_start_date,
+            "contractDuration": contract_duration_num or "",
+            "hoursCount": hours_count_num or "",
+            "empcount": empcount_num or "",
+            "weeklyvisits": weeklyvisits_num or "",
+            "visitShift": str(shift),
+            # "promotionCode": selected_pkg.get("promotionCode"),
+            # "days": days_str,                                                   # 5 أيام فقط
+            "timeSlotId": chosen_time_slot_id
+        }
+
+        headers = {
+            "Authorization": token,
+            "content-type": "application/json"
+        }
+
+        LOGGER.info(f"📡 استدعاء AvailableDaysWithDate API: {payload}")
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        # Try to parse JSON response safely
+        resp_data = None
+        resp_text = None
+        try:
+            resp_json = resp.json()
+            resp_data = resp_json.get("data", resp_json)
+        except Exception:
+            resp_text = resp.text
+
+        # Save a trace of the call (URL, request body, response, status) to availableDay.json
+        try:
+            save_path = os.path.join(os.path.dirname(__file__), "..", "availableDay.json")
+            trace = {
+                "url": url,
+                "request": payload,
+                "status_code": resp.status_code,
+                "response_json": resp_data,
+                "response_text": resp_text,
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            }
+            _write_json_file(save_path, trace)
+            LOGGER.info("✅ حفظت نتيجة AvailableDaysWithDate في %s", save_path)
+        except Exception as e:
+            LOGGER.warning("⚠️ خطأ عند حفظ availableDay.json: %s", e)
+
+        if resp.status_code != 200:
+            LOGGER.warning(f"⚠️ API status code: {resp.status_code}")
+            return None
+
+        data = resp_data if resp_data is not None else []
+
+        # حفظ الأيام
+        ud["available_days"] = data
+        save_user_data(ud)
+
+        return data
+
+    except Exception as e:
+        LOGGER.warning(f"⚠️ خطأ في fetch_available_days: {e}")
+        return None
+def select_preferred_days(chosen_numbers: List[int]) -> Optional[List[Dict[str, str]]]:
+    """
+    اختيار الأيام المفضلة بناءً على أرقام يختارها المستخدم.
+    """
+    try:
+        from .user_info_manager import load_user_data, save_user_data
+        ud = load_user_data()
+
+        available = ud.get("available_days", [])
+        if not available:
+            return None
+
+        # تحويل الأرقام المدخلة إلى إندكس (1 => 0)
+        selected_days = []
+        for n in chosen_numbers:
+            index = n - 1
+            if 0 <= index < len(available):
+                selected_days.append(available[index])
+
+        ud["selected_days"] = selected_days
+        save_user_data(ud)
+
+        return selected_days
+
+    except Exception as e:
+        LOGGER.warning(f"⚠️ خطأ في select_preferred_days: {e}")
+        return None
+def format_available_days_message(days: List[Dict[str, str]]) -> str:
+    msg = "📅 الأيام المتاحة بناءً على التاريخ المختار:\n\n"
+
+    for i, d in enumerate(days, start=1):
+        msg += f"({i}) {d['dayName']} - {d['date']}\n"
+
+    msg += "\n هل تريد التأكيد على اليوم المختار ام تريد اختيار يوم اخر من الأيام المفضلة ؟.\n"
+    msg += "\n اخبرني بالتاريخ المناسب \n"
+ 
+
+    return msg
 
