@@ -473,6 +473,23 @@ def complete_profile() -> tuple[bool, Optional[int], Dict[str, Any]]:
 
         # Do the request
         resp = requests.post(url, json=body, headers=headers, timeout=15)
+        try:
+            resp_json = resp.json()
+        except Exception:
+            resp_json = {"raw_text": resp.text}
+        
+        try:
+        # حفظ اللوج في الملف الجديد
+            save_complete_profile_log(
+            url=url,
+            body=body,
+             response=resp_json,
+             headers=headers,
+             status_code=resp.status_code
+            )
+        except Exception as e:
+                print("⚠️ فشل حفظ ملف completeProfile:", e)
+
 
         try:
             resp_json = resp.json()
@@ -490,3 +507,23 @@ def complete_profile() -> tuple[bool, Optional[int], Dict[str, Any]]:
 
     except Exception as e:
         return False, None, {"error": str(e)}
+COMPLEAT_PROFILE_LOG = os.path.join(os.path.dirname(__file__), "..", "compleatProfile.json")
+
+def save_complete_profile_log(url, body, response, headers, status_code):
+    """
+    حفظ URL + BODY + RESPONSE + HEADERS + STATUS في ملف compleatProfile.json 
+    بنفس تنسيق المثال الذي طلبته المستخدم.
+    """
+
+    payload = {
+        "STATUS": status_code,
+        "URL": url,
+        "BODY": body,
+        "RESPONSE": response,
+        "HEADERS": headers,
+        "saved_at": datetime.datetime.utcnow().isoformat() + "Z"
+    }
+
+    # الكتابة بشكل جميل
+    with open(COMPLEAT_PROFILE_LOG, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
