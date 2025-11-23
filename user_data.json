@@ -1,17 +1,5 @@
 {
-  "latitude": "24.713311",
-  "longitude": "46.668078",
-  "name": "سلمى",
-  "phone": "0506419970",
-  "contactId": "4b540e2c-50e5-4dba-8b34-76df218590ae",
-  "contact_id": "4b540e2c-50e5-4dba-8b34-76df218590ae",
-  "city": "الرياض",
-  "city_id": "629a2a15-14fa-e911-a81f-000d3abaded5",
-  "district": "الاسكان",
-  "district_id": "9faa6ed2-8420-ee11-9168-a9cd38b6ac61",
-  "housing_key": 0,
-  "housing_value": "فيلا",
-  "is_villa": true,
-  "houseNo": "٤٤",
-  "addressNotes": "تييست"
+  "auth_token": "bearer X9YhUyJa5rIFe62Fq4XTTaQT0B6KHvSMdPUb91Ny1DqgBkJOb9xKCx6UG2sZzrfCysL5RMGywh8s7fTJ3O5Pv4DbKw5v60AF1_rLaOc_QoqHH6l1ymps4KWUkG_9xn1QQGjnT-h4a8YxfaM_znpd2BOcgUytYtbC3Su5gaPgmQEwtnV2BVhGOKyRCrEgSOuS9TJsOdRdxIZYe0WQE5D66_wC3vdF6jOGOV44yG1kjis2ELKH-cqQx4pDNilE3QdzS9IS1C68gO2GAvCbh0Lanm0kLsg5RMzDsrz-8oBG6x2Z_XNwQC1A7nBCMByYquio2lG3sPFAfmHu_qvJPGHIHBfx825oUGq8BzqjxoXcwotFzR5WRJRNtUN1H1yZDecwHzRnOlKUhUSsQXolJMiU2NNlrgajc_qx2uWSARko-XXs5sRVy_rv5SS1qu_A4P_fIYmj8QTE5SLOCeBdN31RxP5_PzZKTm77rAnIxZx4L7b7LHJ0QYksS1m6NXUbZ9vrwbjgIXIvD5mTlfmU_rFVUA",
+  "contactId": "1c4167f5-81c4-4edb-b538-95ba5d52e92e",
+  "contact_id": "1c4167f5-81c4-4edb-b538-95ba5d52e92e"
 }
