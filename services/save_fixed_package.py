@@ -100,6 +100,30 @@ def _write_json_file(path: str, data: Dict[str, Any]) -> bool:
         return False
 
 
+def _append_hourly_pricing_trace(path: str, trace: Dict[str, Any]) -> bool:
+    """Append a trace object to a JSON array at `path`. Creates the file if missing."""
+    try:
+        existing = None
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = None
+
+        if isinstance(existing, list):
+            existing.append(trace)
+            _write_json_file(path, existing)
+            return True
+        else:
+            # create new list with this trace
+            _write_json_file(path, [trace])
+            return True
+    except Exception as exc:
+        LOGGER.warning("⚠️ خطأ في إضافة سجل HourlyPricing: %s", exc)
+        return False
+
+
 def read_fixed_package() -> Dict[str, Any]:
     """Return the contents of FixedPackage.json or an empty dict if missing."""
     data = _read_json_file(FIXED_PACKAGE_PATH)
@@ -818,6 +842,11 @@ def fetch_available_days(contract_start_date: str) -> Optional[List[Dict[str, st
 
         # حفظ الأيام
         ud["available_days"] = data
+        # سجل آخر تاريخ طلبه المستخدم حتى نتمكن من كشف "الإرسال مرة أخرى" لاحقًا
+        try:
+            ud["last_contract_start_date"] = contract_start_date
+        except Exception:
+            pass
         save_user_data(ud)
 
         return data
@@ -864,3 +893,211 @@ def format_available_days_message(days: List[Dict[str, str]]) -> str:
 
     return msg
 
+def fetch_pricing_summary_with_ai(contract_date: str) -> str:
+    """
+    استدعاء API HourlyPricing/HourlyPricing
+    ثم عرض تفاصيل الباقة المختارة + التاريخ + الأسعار بأسلوب AI
+    """
+
+    try:
+        from .user_info_manager import load_user_data
+        ud = load_user_data()
+        selected_pricing_id = ud.get("selectedHourlyPricingId")
+
+        pkg = read_fixed_package()
+        selected_pkg = pkg.get("selected_package")
+
+        if not selected_pricing_id or not selected_pkg:
+            return "⚠️ لا يوجد باقة مختارة حالياً."
+
+        # Prefer using time_slot keys stored in user_data (set by call_time_slot_api)
+        time_slot_id = ud.get("time_slot_keys", [None])[0]
+
+        payload = {
+            "selectedHourlyPricingId": selected_pricing_id,
+            "resourceGroupId": pkg.get("nationality_key"),
+            "serviceId": pkg.get("service_id"),
+            "contractStartDate": contract_date,
+            "contractDuration": _extract_numeric_value(selected_pkg.get("contractDurationName")),
+            "hoursCount": _extract_numeric_value(selected_pkg.get("visitHours")),
+            "empcount": _extract_numeric_value(selected_pkg.get("employeeNumberName")),
+            "weeklyvisits": _extract_numeric_value(selected_pkg.get("weeklyVisitName")),
+            "visitShift": pkg.get("shift_key"),
+            "promotionCode": selected_pkg.get("promotionCode"),
+            # send the concrete date as the 'days' value (API expects date strings)
+            "days": contract_date,
+            "timeSlotId": time_slot_id
+        }
+
+        url = "https://erp.rnr.sa:8005/ar/api/HourlyPricing/HourlyPricing"
+        headers = {
+            "Authorization": ud.get("auth_token"),
+            "content-type": "application/json"
+        }
+
+        LOGGER.info(f"📡 استدعاء Pricing Summary API: {payload}")
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        # Save a trace of the pricing call for debugging
+        try:
+            trace_path = os.path.join(os.path.dirname(__file__), "..", "hourlyPricing_summary.json")
+            trace = {
+                "url": url,
+                "request": payload,
+                "status_code": resp.status_code,
+                "response_json": None,
+                "response_text": None,
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            }
+            try:
+                trace_json = resp.json()
+                trace["response_json"] = trace_json
+            except Exception:
+                trace["response_text"] = resp.text
+            _write_json_file(trace_path, trace)
+            LOGGER.info("✅ حفظت نتيجة Pricing Summary في %s", trace_path)
+            # also append to unified HourlyPricing.json for easier inspection
+            try:
+                unified = os.path.join(os.path.dirname(__file__), "..", "HourlyPricing.json")
+                _append_hourly_pricing_trace(unified, dict(trace))
+                LOGGER.info("✅ أضفت السجل إلى %s", unified)
+            except Exception:
+                pass
+        except Exception as e:
+            LOGGER.warning("⚠️ خطأ عند حفظ سعر الباقة: %s", e)
+
+        if resp.status_code != 200:
+            return "⚠️ حدث خطأ أثناء جلب ملخص الأسعار."
+
+        data = resp.json().get("data", {})
+        packages = data.get("hourlyPackages", [])
+
+        if not packages:
+            return "⚠️ لم يتم العثور على بيانات الباقة."
+
+        pkg_data = packages[0]
+
+        # تجهيز AI
+        model = genai.GenerativeModel("models/gemini-2.5-pro")
+
+        prompt = f"""
+أنت مساعد متخصص في تلخيص الباقات.
+اعرض المعلومات التالية بشكل أنيق وواضح، وبنفس الأسلوب الذي استخدمته عند عرض الباقات سابقاً.
+
+المعلومات:
+اسم الباقة: {pkg_data.get("resourceGroupName")}
+تاريخ البداية: {contract_date}
+السعر قبل الخصم: {pkg_data.get("packagePrice")}
+قيمة الخصم: {pkg_data.get("totalDiscountAmount")}
+نسبة الخصم: {pkg_data.get("totalDiscountPercent")}%
+السعر بعد الخصم: {pkg_data.get("packagePriceAfterTotalDiscount")}
+الضريبة: {pkg_data.get("vatAmount")}
+السعر النهائي: {pkg_data.get("finalPrice")}
+عدد الساعات: {pkg_data.get("visitHours")}
+عدد الزيارات الأسبوعية: {pkg_data.get("weeklyvisits")}
+مدة العقد: {pkg_data.get("contractDuration")}
+موعد الزيارة: {pkg_data.get("visitShift")}
+        """
+
+        resp_ai = model.generate_content(prompt)
+        return resp_ai.text.strip()
+
+    except Exception as e:
+        LOGGER.warning(f"⚠️ خطأ في fetch_pricing_summary_with_ai: {e}")
+        return "⚠️ حدث خطأ أثناء تجهيز تفاصيل الباقة."
+def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Optional[Dict[str, Any]]:
+    """
+    استدعاء API HourlyPricing بعد أن يختار المستخدم التاريخ واليوم المفضل.
+    """
+    try:
+        from .user_info_manager import load_user_data
+        ud = load_user_data()
+        pkg = read_fixed_package()
+
+        url = "https://erp.rnr.sa:8005/ar/api/HourlyPricing/HourlyPricing"
+        step_id = pkg.get("stepId")
+
+        # Normalize quantity-like fields to numeric values (no words)
+        selected_pkg = pkg.get("selected_package", {})
+
+        contract_duration_num = (
+            _extract_numeric_value(selected_pkg.get("contractDurationName"))
+            or _extract_numeric_value(selected_pkg.get("contractDuration"))
+            or _extract_numeric_value(selected_pkg.get("contractDurationName"))
+            or str(selected_pkg.get("contractDurationName") or "")
+        )
+
+        hours_count_num = (
+            _extract_numeric_value(selected_pkg.get("visitHours"))
+            or _extract_numeric_value(selected_pkg.get("hoursCount"))
+            or str(selected_pkg.get("visitHours") or "")
+        )
+
+        empcount_num = (
+            _extract_numeric_value(selected_pkg.get("employeeNumberName"))
+            or _extract_numeric_value(selected_pkg.get("employeeNumber"))
+            or str(selected_pkg.get("employeeNumberName") or "")
+        )
+
+        weeklyvisits_num = (
+            _extract_numeric_value(selected_pkg.get("weeklyVisitName"))
+            or _extract_numeric_value(selected_pkg.get("weeklyvisits"))
+            or str(selected_pkg.get("weeklyVisitName") or "")
+        )
+
+        body = {
+            "selectedHourlyPricingId": ud.get("selectedHourlyPricingId"),
+            "resourceGroupId": pkg.get("nationality_key"),
+            "serviceId": pkg.get("service_id"),
+            "contractStartDate": contract_start_date,
+            "contractDuration": contract_duration_num,
+            "hoursCount": hours_count_num,
+            "empcount": empcount_num,
+            "weeklyvisits": weeklyvisits_num,
+            "visitShift": pkg.get("shift_key"),
+            "promotionCode": selected_pkg.get("promotionCode"),
+            "days": chosen_day,
+            "timeSlotId": ud.get("time_slot_keys", [None])[0]
+        }
+
+        params = {"stepId": step_id}
+
+        resp = requests.post(url, params=params, json=body, timeout=10)
+
+        # Save a trace of this pricing call for debugging
+        try:
+            trace_path = os.path.join(os.path.dirname(__file__), "..", "hourlyPricing.json")
+            trace = {
+                "url": url,
+                "params": params,
+                "request": body,
+                "status_code": resp.status_code,
+                "response_json": None,
+                "response_text": None,
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            }
+            try:
+                trace["response_json"] = resp.json()
+            except Exception:
+                trace["response_text"] = resp.text
+            _write_json_file(trace_path, trace)
+            LOGGER.info("✅ حفظت نتيجة HourlyPricing في %s", trace_path)
+            # also append to unified HourlyPricing.json
+            try:
+                unified = os.path.join(os.path.dirname(__file__), "..", "HourlyPricing.json")
+                _append_hourly_pricing_trace(unified, dict(trace))
+                LOGGER.info("✅ أضفت السجل إلى %s", unified)
+            except Exception:
+                pass
+        except Exception as e:
+            LOGGER.warning("⚠️ خطأ عند حفظ نتيجة HourlyPricing: %s", e)
+
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            LOGGER.warning("⚠️ HourlyPricing API returned status: %s", resp.status_code)
+            return None
+
+    except Exception as e:
+        LOGGER.warning("⚠️ Error calling HourlyPricing API: %s", e)
+        return None

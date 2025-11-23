@@ -40,6 +40,8 @@ from .save_fixed_package import (
     get_available_nationalities,
     read_fixed_package,
     handle_package_selection,
+    call_hourly_pricing_api,
+    format_packages_message,
     FIXED_PACKAGE_PATH,
 )
 
@@ -341,17 +343,50 @@ def get_best_answer(user_input):
         # تقبل صيغ dd/mm/yyyy أو dd-mm-yyyy أو dd.mm.yyyy أو dd mm yyyy
         if re.fullmatch(r"\d{1,2}[\/\-\.\s]\d{1,2}[\/\-\.\s]\d{2,4}", date_candidate):
             ud = load_user_data()
-            if ud.get("pending_query") == "timeslot_date":
+            if ud.get("pending_query") in ("timeslot_date", "preferred_days"):
                 try:
+                    # If same date was already requested and available_days exist, call HourlyPricing
+                    last_date = ud.get("last_contract_start_date")
+                    available = ud.get("available_days")
+                    if last_date == date_candidate and available:
+                        selected_days = ud.get("selected_days") or []
+                        if selected_days:
+                            # prefer the actual date string (dd/mm/yyyy) over dayName
+                            chosen_day = selected_days[0].get("date") or selected_days[0].get("dayName")
+                        else:
+                            first = available[0]
+                            chosen_day = first.get("date") or first.get("dayName")
+
+                        resp = call_hourly_pricing_api(date_candidate, chosen_day)
+                        if not resp:
+                            return "⚠️ فشل استدعاء ملخص الأسعار. حاول مرة أخرى لاحقاً."
+
+                        data = resp.get("data") if isinstance(resp, dict) else resp
+                        packages = None
+                        if isinstance(data, dict):
+                            packages = data.get("hourlyPackages")
+
+                        if packages:
+                            try:
+                                return format_packages_message(packages)
+                            except Exception:
+                                import json as _json
+                                return _json.dumps(data, ensure_ascii=False, indent=2)
+
+                        return "⚠️ لم نجد باقات في استجابة Pricing API."
+
+                    # otherwise fetch available days as first-time flow
                     from .save_fixed_package import fetch_available_days, format_available_days_message
                     days = fetch_available_days(date_candidate)
                     if not days:
                         return "⚠️ لم نتمكن من جلب الأيام المتاحة لهذا التاريخ. حاول تاريخاً آخر أو أعد المحاولة لاحقاً."
+                    # reload user_data because fetch_available_days saves available_days itself
+                    ud = load_user_data()
                     ud["pending_query"] = "preferred_days"
                     save_user_data(ud)
                     return format_available_days_message(days)
                 except Exception as e:
-                    LOGGER.warning("⚠️ خطأ أثناء جلب الأيام المتاحة: %s", e)
+                    LOGGER.warning("⚠️ خطأ أثناء جلب/معالجة الأيام المبكرة: %s", e)
                     return "⚠️ حدث خطأ أثناء جلب الأيام المتاحة. حاول مرة أخرى لاحقاً."
     except Exception as e:
         LOGGER.debug("⚠️ تجاهل خطأ في التحقق المبكر من التاريخ: %s", e)
@@ -477,18 +512,51 @@ def get_best_answer(user_input):
         # تقبل صيغ dd/mm/yyyy أو dd-mm-yyyy
         if re.fullmatch(r"\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}", date_candidate):
             ud = load_user_data()
-            if ud.get("pending_query") == "timeslot_date":
+            if ud.get("pending_query") in ("timeslot_date", "preferred_days"):
                 try:
+                    # If the user already requested this same date and we saved available_days,
+                    # treat this as the "send again" case and call the HourlyPricing API.
+                    last_date = ud.get("last_contract_start_date")
+                    available = ud.get("available_days")
+                    if last_date == date_candidate and available:
+                        # determine chosen day: prefer selected_days, else first available
+                        selected_days = ud.get("selected_days") or []
+                        if selected_days:
+                            chosen_day = selected_days[0].get("dayName") or selected_days[0].get("date")
+                        else:
+                            first = available[0]
+                            chosen_day = first.get("dayName") or first.get("date")
+
+                        resp = call_hourly_pricing_api(date_candidate, chosen_day)
+                        if not resp:
+                            return "⚠️ فشل استدعاء ملخص الأسعار. حاول مرة أخرى لاحقاً."
+
+                        data = resp.get("data") if isinstance(resp, dict) else resp
+                        packages = None
+                        if isinstance(data, dict):
+                            packages = data.get("hourlyPackages")
+
+                        if packages:
+                            try:
+                                return format_packages_message(packages)
+                            except Exception:
+                                import json as _json
+                                return _json.dumps(data, ensure_ascii=False, indent=2)
+
+                        return "⚠️ لم نجد باقات في استجابة Pricing API."
+
+                    # First time for this date: fetch available days and show them
                     from .save_fixed_package import fetch_available_days, format_available_days_message
                     days = fetch_available_days(date_candidate)
                     if not days:
                         return "⚠️ لم نتمكن من جلب الأيام المتاحة لهذا التاريخ. حاول تاريخاً آخر أو أعد المحاولة لاحقاً."
-                    # نضع العلم أننا الآن في سايكل اختيار الأيام المفضلة
+                    # reload user_data to pick up available_days written by fetch_available_days
+                    ud = load_user_data()
                     ud["pending_query"] = "preferred_days"
                     save_user_data(ud)
                     return format_available_days_message(days)
                 except Exception as e:
-                    LOGGER.warning("⚠️ خطأ أثناء جلب الأيام المتاحة: %s", e)
+                    LOGGER.warning("⚠️ خطأ أثناء جلب/معالجة الأيام المتاحة: %s", e)
                     return "⚠️ حدث خطأ أثناء جلب الأيام المتاحة. حاول مرة أخرى لاحقاً."
     except Exception as e:
         LOGGER.debug("⚠️ تجاهل خطأ في التحقق من التاريخ: %s", e)
@@ -500,20 +568,19 @@ def get_best_answer(user_input):
             trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
             nums = re.findall(r"\d+", user_input.translate(trans))
             if nums:
-                chosen = [int(n) for n in nums]
-                try:
-                    from .save_fixed_package import select_preferred_days
+                    chosen = [int(n) for n in nums]
+                
+                    from .save_fixed_package import select_preferred_days , fetch_pricing_summary_with_ai
                     sel = select_preferred_days(chosen)
                     if not sel:
                         return "⚠️ لم نتمكن من حفظ الأيام المفضلة. حاول اختيار أرقام صحيحة من القائمة." 
                     # نزيل العلم بعد الحفظ
                     ud.pop("pending_query", None)
                     save_user_data(ud)
-                    lines = [f"- {d.get('dayName')} ({d.get('date')})" for d in sel]
-                    return "✅ تم حفظ الأيام المفضلة بنجاح:\n" + "\n".join(lines)
-                except Exception as e:
-                    LOGGER.warning("⚠️ خطأ أثناء حفظ الأيام المفضلة: %s", e)
-                    return "⚠️ حدث خطأ أثناء معالجة اختيار الأيام المفضلة. حاول مرة أخرى لاحقاً."
+                    selected_date = sel[0]["date"]
+                    summary = fetch_pricing_summary_with_ai(selected_date)
+                    return f"✅ تم حفظ الأيام المفضلة بنجاح.\n\n{summary}"
+
     except Exception as e:
         LOGGER.debug("⚠️ تجاهل خطأ أثناء معالجة الأيام المفضلة: %s", e)
 
