@@ -4,6 +4,7 @@ import requests
 import uuid
 import datetime
 import secrets  # توليد رموز عشوائية آمنة
+from typing import Optional, Dict, Any  # added to fix Pylance type error
 
 USER_DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "user_data.json")
 HOURLYLEAD_API = "https://erp.rnr.sa:8005/ar/api/Lead/CreateHourly"
@@ -40,13 +41,17 @@ def save_user_data(data):
 
 def collect_user_info():
     """
-    تتحقق من وجود بيانات المستخدم (الاسم، رقم الهاتف، المدينة، الحي)
+    تتحقق من وجود بيانات المستخدم (الاسم، رقم الهاتف، الايميل، رقم الهوية، النوع، المدينة، الحي)
     ولو ناقصة ترجع النص المناسب لتسأل المستخدم عنها.
     """
     user_data = load_user_data()
+    # ترتيب الحقول هنا يحدد ترتيب الأسئلة على المستخدم
     required_fields = {
         "name": "من فضلك أدخل اسمك الكامل:",
         "phone": "من فضلك أدخل رقم هاتفك:",
+        "email": "من فضلك أدخل بريدك الإلكتروني (Email):",
+        "national_id": "من فضلك أدخل رقم الهوية/الإقامة:",
+        "gender": "من فضلك اختر النوع: ذكر أو أنثى",
         "city": "من فضلك أدخل اسم مدينتك:",
         "district": "من فضلك أدخل اسم الحي:"
     }
@@ -64,10 +69,29 @@ def update_user_info(field, value):
     user_data = load_user_data()
     # Normalize and save
     v = value.strip()
+    # Arabic-indic digits to western for numeric fields
+    trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
     if field == "phone":
-        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
         v = v.translate(trans)
+    elif field == "national_id":
+        # normalize digits and remove spaces/dashes
+        v = v.translate(trans).replace(" ", "").replace("-", "")
+    elif field == "email":
+        v = v.lower()
+    elif field == "gender":
+        # normalize common inputs to Arabic canonical forms
+        tmp = v.strip().lower()
+        if tmp in ("m", "male", "ذكر", "ذ", "male "):
+            v = "ذكر"
+        elif tmp in ("f", "female", "أنثى", "انثى", "أنثى", "انثى "):
+            v = "أنثى"
+        else:
+            # keep user input if unrecognized, but trim
+            v = v
+
     user_data[field] = v
+
     if field == "phone":
         if not user_data.get("contactId") and not user_data.get("contact_id"):
             new_id = str(uuid.uuid4())
@@ -133,6 +157,9 @@ def create_lead_hourly(pending_query=None, description=None):
             "phoneNumber": user_data.get("phone"),
             "districtId": user_data.get("district_id") or user_data.get("districtId") or None,
             "serviceId": None,
+            # newly added fields
+            "email": user_data.get("email"),
+            "nationalId": user_data.get("national_id") or user_data.get("nationalId"),
         }
 
         headers = {"Content-Type": "application/json"}
@@ -386,3 +413,80 @@ def save_address_snapshot(user_data: dict, resp_json=None, status_code=None):
         with open(err_path, "a", encoding="utf-8") as ef:
             ef.write(f"{datetime.datetime.utcnow().isoformat()} - save_address_snapshot error: {e}\n")
         return False
+
+def _get_step_id_for_complete_profile() -> str:
+    """Return stepId to use for CompleteProfile URL. Prefer fixedPackage.json stepId, else empty."""
+    try:
+        fp = _load_fixed_package()
+        return fp.get("stepId") or fp.get("step_id") or ""
+    except Exception:
+        return ""
+
+def complete_profile() -> tuple[bool, Optional[int], Dict[str, Any]]:
+    """
+    Sends a POST to CompleteProfile using saved user_data.
+    Returns (ok: bool, status_code: int or None, resp_json: dict or raw text container).
+    On success (status 200) sets user_data['profile_completed'] = True.
+    """
+    try:
+        user_data = load_user_data()
+        contact_id = user_data.get("contactId") or user_data.get("contact_id")
+        if not contact_id:
+            return False, None, {"error": "missing contactId"}
+
+        # Determine nationalityId: prefer nationaliy_key saved by selection, else try any alt keys
+        nationality_id = user_data.get("nationality_key") or user_data.get("nationalityId") or user_data.get("nationality_id") or ""
+
+        # Map gender stored as Arabic to expected numeric codes (fallback to existing numeric)
+        g = user_data.get("gender", "")
+        gender_map = {"ذكر": "1", "أنثى": "2", "male": "1", "female": "2", "m": "1", "f": "2"}
+        gender_val = gender_map.get(str(g).strip().lower(), str(g))
+
+        body = {
+            "contactId": contact_id,
+            "jobTitle": user_data.get("jobTitle") or "",
+            "email": user_data.get("email") or "",
+            "nationalityId": nationality_id,
+            "phoneNumber": user_data.get("phone") or "",
+            "otherMobilePhone": user_data.get("otherMobilePhone") or "",
+            "gender": gender_val,
+            "idNumber": user_data.get("national_id") or user_data.get("idNumber") or ""
+        }
+
+        # Build URL using stepId from fixedPackage.json if available; fallback to empty stepId
+        step_id = _get_step_id_for_complete_profile()
+        url = f"https://erp.rnr.sa:8005/ar/api/Contact/CompleteProfile?serviceType=2&stepId={step_id}&stepType=2"
+
+        # Build headers: prefer normalized auth_token if present, and include other optional headers from SaveAddrease.json
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/plain, */*"}
+        auth = _ensure_auth_token_in_user_data()
+        if auth:
+            headers["Authorization"] = auth
+
+        # Try to preserve firebaseDeviceId/playerId/isOutSA if available in user_data
+        if user_data.get("firebaseDeviceId"):
+            headers["firebaseDeviceId"] = user_data.get("firebaseDeviceId")
+        if user_data.get("playerId"):
+            headers["playerId"] = user_data.get("playerId")
+        if user_data.get("isOutSA") is not None:
+            headers["isOutSA"] = str(user_data.get("isOutSA")).lower()
+
+        # Do the request
+        resp = requests.post(url, json=body, headers=headers, timeout=15)
+
+        try:
+            resp_json = resp.json()
+        except Exception:
+            resp_json = {"raw_text": resp.text}
+
+        if resp.status_code == 200:
+            # mark completed
+            ud = load_user_data()
+            ud["profile_completed"] = True
+            save_user_data(ud)
+            return True, resp.status_code, resp_json
+        else:
+            return False, resp.status_code, resp_json
+
+    except Exception as e:
+        return False, None, {"error": str(e)}

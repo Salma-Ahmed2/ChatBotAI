@@ -27,6 +27,7 @@ from .user_info_manager import (
     load_user_data,
     save_user_data,
     create_lead_hourly,
+    complete_profile,   # <-- new import
 )
 from .user_info_manager import (
     fetch_housing_types,
@@ -150,7 +151,7 @@ def get_best_answer(user_input):
     if service_related:
         print(f"🔍 تم اكتشاف سؤال عن الخدمات: {user_input}")
         # لو بيانات المستخدم ناقصة، نسجل أن هناك إجراء معلق ثم نطلب البيانات المطلوبة
-        missing = [f for f in ["name", "phone", "city", "district"] if not user_data.get(f)]
+        missing = [f for f in ["name", "phone", "email", "national_id", "gender", "city", "district"] if not user_data.get(f)]
         if missing:
             # حفظ الإجراء المعلق حتى يتم ارسال البيانات
             update_user_info("pending_action", "services")
@@ -177,7 +178,7 @@ def get_best_answer(user_input):
             # user confirmed
             if normalized_yes:
                 # تأكد من توفر البيانات المطلوبة
-                missing = [f for f in ["name", "phone", "city", "district"] if not ud.get(f)]
+                missing = [f for f in ["name", "phone", "email", "national_id", "gender", "city", "district"] if not ud.get(f)]
                 if missing:
                     msg, next_field = collect_user_info()
                     if msg:
@@ -208,12 +209,14 @@ def get_best_answer(user_input):
             "es": "Lo siento, este lenguaje es inapropiado. Por favor, comuníquese respetuosamente. Gracias por su comprensión 🚫"
         }
 
-    # إذا المستخدم يرسل بيانات مطلوبة (الاسم، الهاتف، المدينة، الحي) فنسجلها
+    # إذا المستخدم يرسل بيانات مطلوبة (الاسم، الهاتف، المدينة، الحي، الايميل، الهوية، النوع) فنسجلها
     # لا نعتبر المرسل يسأل عن الحقل اذا كتب كلمات مثل 'اسم' أو 'رقم' أو 'مدينة' أو 'حي' (سؤال)
-    for field in ["name", "phone", "city", "district"]:
+    for field in ["name", "phone", "email", "national_id", "gender", "city", "district"]:
         if not user_data.get(field):
             # تجاهل الإدخال إذا بدا أن المستخدم يطرح سؤالاً عن الحقل
-            if len(user_input.strip().split()) >= 1 and not any(x in user_input for x in ["اسم", "رقم", "مدينة", "حي"]):
+            if len(user_input.strip().split()) >= 1 and not any(
+                x in user_input for x in ["اسم", "رقم", "مدينة", "حي", "ايميل", "بريد", "هوية", "جنس", "email", "id", "national", "gender"]
+            ):
 
                 # ✅ التحقق من المدينة
                 if field == "city":
@@ -711,6 +714,21 @@ def get_best_answer(user_input):
         # نضيف سؤال البيانات بعد الإجابة الأصلية
         return f"{final_answer}\n\n📋 {msg}"
     else:
+        # إذا كل الحقول المطلوبة متوفرة ولم نكمل ملف المستخدم بعد، نحاول استدعاء CompleteProfile
+        try:
+            ud = load_user_data()
+            required = ["name", "phone", "email", "national_id", "gender", "city", "district", "contactId"]
+            if not ud.get("profile_completed") and all(ud.get(k) for k in required):
+                ok, status, resp = complete_profile()
+                if ok:
+                    return f"{final_answer}\n\n✅ تم إكمال الملف الشخصي وإرسال البيانات بنجاح (status {status})."
+                else:
+                    # keep terse failure message with status if present
+                    status_text = f" (status {status})" if status else ""
+                    return f"{final_answer}\n\n⚠️ حاولت إرسال الملف الشخصي ولكن فشل الإرسال{status_text}."
+        except Exception as e:
+            print(f"⚠️ خطأ أثناء محاولة إكمال الملف الشخصي: {e}")
+
         return final_answer
 
 
