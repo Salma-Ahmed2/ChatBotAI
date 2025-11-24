@@ -1,0 +1,85 @@
+[
+  {
+    "url": "https://erp.rnr.sa:8005/ar/api/HourlyPricing/HourlyPricing",
+    "params": {
+      "stepId": "d7c87332-a6a8-488b-8560-19c8061f34a0"
+    },
+    "request": {
+      "selectedHourlyPricingId": "086e957f-f6ec-ef11-88df-000d3ab06f75",
+      "resourceGroupId": "f8ca6b13-62ec-ef11-88df-000d3ab06f75",
+      "serviceId": "d7e30b92-61ec-ef11-88df-000d3ab06f75",
+      "contractStartDate": "25/11/2025",
+      "contractDuration": "1",
+      "hoursCount": "4",
+      "empcount": "1",
+      "weeklyvisits": "1",
+      "visitShift": 1,
+      "promotionCode": null,
+      "days": "25/11/2025",
+      "timeSlotId": "c66a0b3e-82c6-ee11-889f-000d3ab06f75"
+    },
+    "status_code": 200,
+    "response_json": {
+      "data": {
+        "hourlyPackages": [
+          {
+            "hourPrice": 32.0,
+            "hourlypricingId": "9908c596-63ec-ef11-88df-000d3ab06f75",
+            "packageDisplayName": "اندونيسيا",
+            "resourceGroupId": "f8ca6b13-62ec-ef11-88df-000d3ab06f75",
+            "serviceId": null,
+            "resourceGroupName": "اندونيسيا",
+            "isAvailable": false,
+            "isResourcesAvailable": false,
+            "promotionCode": "MO IN 4h",
+            "days": [
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Saturday",
+              "Sunday",
+              "Monday"
+            ],
+            "isAvaliableForShift": true,
+            "visitShift": 1,
+            "promotionState": {
+              "promotionName": "اندونيسيا صباحى 4 ساعات",
+              "promotionStatus": 2,
+              "promotionValidationDescription": null
+            },
+            "packagePrice": 128.0,
+            "packageDiscountAmount": 0.0,
+            "packageDiscountPercent": 0.0,
+            "packagePriceAfterPackageDiscount": 128.0,
+            "packagePriceAfterPackageDiscountWithVat": 147.2,
+            "promotionDiscountAmount": 50.608695652224,
+            "promotionDiscountPercent": 0.0,
+            "totalPromotionDiscountPercent": 39.54,
+            "totalPromotionDiscountAmount": 50.608695652224,
+            "promotionOfferList": [
+              {
+                "promotionOfferType": 1,
+                "promotionDescription": "خصم %40"
+              }
+            ],
+            "totalDiscountPercent": 39.54,
+            "totalDiscountAmount": 50.61,
+            "packagePriceAfterTotalDiscount": 77.391304347776,
+            "promotionFreeVisitsCount": 0,
+            "promotionFreeEmployeesCount": 0,
+            "vatAmount": 11.6086956521664,
+            "vatRate": 15.0,
+            "finalPrice": 88.9999999999424
+          }
+        ],
+        "packageProperties": "{\"displayName\": {\"type\": \"string\"},\"totalPrice\": {\"type\": \"currency\",\"round\": 2},\"promotionTotalDiscountPercent\": {\"type\": \"percent\"},\"priceAfterTotalDiscount\": {\"type\": \"currency\",\"round\": 2},\"freeVisitsCount\": {\"type\": \"string\"},\"vatRate\": {\"type\": \"percent\"},\"vatAmount\": {\"type\": \"currency\",\"round\": 2},\"finalPrice\": {\"type\": \"currency\",\"round\": 2}}"
+      },
+      "status": 200,
+      "code": null,
+      "message": null,
+      "location": null
+    },
+    "response_text": null,
+    "saved_at": "2025-11-24T14:49:45Z"
+  }
+]

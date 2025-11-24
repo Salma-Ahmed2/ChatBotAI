@@ -1,0 +1,44 @@
+{
+  "url": "https://erp.rnr.sa:8005/ar/api/HourlyPricing/AvailableDaysWithDate?stepId=d7c87332-a6a8-488b-8560-19c8061f34a0",
+  "request": {
+    "selectedHourlyPricingId": "086e957f-f6ec-ef11-88df-000d3ab06f75",
+    "resourceGroupId": "f8ca6b13-62ec-ef11-88df-000d3ab06f75",
+    "serviceId": "d7e30b92-61ec-ef11-88df-000d3ab06f75",
+    "contractStartDate": "25/11/2025",
+    "contractDuration": "1",
+    "hoursCount": "4",
+    "empcount": "1",
+    "weeklyvisits": "1",
+    "visitShift": "1",
+    "timeSlotId": "c66a0b3e-82c6-ee11-889f-000d3ab06f75"
+  },
+  "status_code": 200,
+  "response_json": [
+    {
+      "dayName": "Tuesday",
+      "date": "25/11/2025"
+    },
+    {
+      "dayName": "Wednesday",
+      "date": "26/11/2025"
+    },
+    {
+      "dayName": "Thursday",
+      "date": "27/11/2025"
+    },
+    {
+      "dayName": "Saturday",
+      "date": "29/11/2025"
+    },
+    {
+      "dayName": "Sunday",
+      "date": "30/11/2025"
+    },
+    {
+      "dayName": "Monday",
+      "date": "01/12/2025"
+    }
+  ],
+  "response_text": null,
+  "saved_at": "2025-11-24T14:36:54Z"
+}

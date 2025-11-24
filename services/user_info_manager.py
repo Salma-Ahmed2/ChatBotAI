@@ -5,10 +5,12 @@ import uuid
 import datetime
 import secrets  # توليد رموز عشوائية آمنة
 from typing import Optional, Dict, Any  # added to fix Pylance type error
+import typing  # ...existing imports...
 
 USER_DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "user_data.json")
 HOURLYLEAD_API = "https://erp.rnr.sa:8005/ar/api/Lead/CreateHourly"
 HOUSING_API = "https://erp.rnr.sa:8005/ar/api/ContactAddress/HousingTypes"
+NATIONALITY_API = "https://erp.rnr.sa:8005/ar/api/Nationality/ActiveNationalities"
 
 # New: build ADD_ADDRESS_API dynamically from fixedPackage.json
 FIXED_PACKAGE_PATH = os.path.join(os.path.dirname(__file__), "..", "fixedPackage.json")
@@ -49,7 +51,9 @@ def collect_user_info():
     required_fields = {
         "name": "من فضلك أدخل اسمك الكامل:",
         "phone": "من فضلك أدخل رقم هاتفك:",
-        "email": "من فضلك أدخل بريدك الإلكتروني (Email):",
+        "email": "من فضلك أدخل بريدك الإلكتروني (email):",
+        # <-- added nationality before national_id
+        "nationality": "من فضلك أدخل جنسيتك:",
         "national_id": "من فضلك أدخل رقم الهوية/الإقامة:",
         "gender": "من فضلك اختر النوع: ذكر أو أنثى",
         "city": "من فضلك أدخل اسم مدينتك:",
@@ -89,6 +93,54 @@ def update_user_info(field, value):
         else:
             # keep user input if unrecognized, but trim
             v = v
+
+    # <-- handle nationality field (store multiple compatible keys)
+    if field == "nationality":
+        # keep the original text (could be country name or code)
+        user_data["nationality"] = v
+
+        # Try to fetch list of active nationalities and match by value
+        try:
+            resp = requests.get(NATIONALITY_API, timeout=10)
+            if resp.status_code == 200:
+                j = resp.json() or {}
+                items = j.get("data") or []
+                # exact match first, then case-insensitive
+                matched = next((n for n in items if str(n.get("value", "")).strip() == v), None)
+                if not matched:
+                    matched = next((n for n in items if str(n.get("value", "")).strip().lower() == v.lower()), None)
+                if matched:
+                    key = matched.get("key")
+                    # save compatible keys used elsewhere
+                    user_data["nationality_key"] = key
+                    user_data["nationalityId"] = key
+                    user_data["nationality_id"] = key
+                else:
+                    # fallback: store the raw text as id-equivalent so downstream logic still sees something
+                    user_data.setdefault("nationalityId", v)
+                    user_data.setdefault("nationality_id", v)
+            else:
+                # API failed; store raw text
+                user_data.setdefault("nationalityId", v)
+                user_data.setdefault("nationality_id", v)
+        except Exception:
+            # network/error: keep text only
+            user_data.setdefault("nationalityId", v)
+            user_data.setdefault("nationality_id", v)
+
+        # Update CompleteProfile snapshot body.nationalityId when possible
+        try:
+            # prepare payload and inject nationalityId (prefer saved key)
+            url, body = prepare_complete_profile_payload()
+            body["nationalityId"] = user_data.get("nationality_key") or user_data.get("nationalityId") or user_data.get("nationality_id") or v
+            # save snapshot (response/headers/status_code left None for now)
+            save_complete_profile_snapshot(url=url, body=body, response=None, headers=None, status_code=None)
+        except Exception:
+            pass
+
+        # persist and return early
+        save_user_data(user_data)
+        return
 
     user_data[field] = v
 
@@ -459,6 +511,7 @@ def complete_profile() -> tuple[bool, Optional[int], Dict[str, Any]]:
 
         # Build headers: prefer normalized auth_token if present, and include other optional headers from SaveAddrease.json
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/plain, */*"}
+        
         auth = _ensure_auth_token_in_user_data()
         if auth:
             headers["Authorization"] = auth
@@ -471,30 +524,34 @@ def complete_profile() -> tuple[bool, Optional[int], Dict[str, Any]]:
         if user_data.get("isOutSA") is not None:
             headers["isOutSA"] = str(user_data.get("isOutSA")).lower()
 
+        # NEW: حفظ لقطة مبدئية قبل إرسال الطلب (RESPONSE/HEADERS/STATUS_CODE = null)
+        try:
+            save_complete_profile_snapshot(url=url, body=body, response=None, headers=None, status_code=None)
+        except Exception:
+            # إذا فشل الحفظ المبدئي لا نوقف العملية
+            pass
+
         # Do the request
         resp = requests.post(url, json=body, headers=headers, timeout=15)
+
+        # parse response safely before saving snapshot
         try:
             resp_json = resp.json()
         except Exception:
             resp_json = {"raw_text": resp.text}
-        
+
+        # تحديث اللقطة بعد استلام الرد (سيحفظ RESPONSE, HEADERS, STATUS_CODE)
         try:
-        # حفظ اللوج في الملف الجديد
-            save_complete_profile_log(
-            url=url,
-            body=body,
-             response=resp_json,
-             headers=headers,
-             status_code=resp.status_code
+            save_complete_profile_snapshot(
+                url=url,
+                body=body,
+                response=resp_json,
+                headers=headers,
+                status_code=resp.status_code
             )
-        except Exception as e:
-                print("⚠️ فشل حفظ ملف completeProfile:", e)
-
-
-        try:
-            resp_json = resp.json()
         except Exception:
-            resp_json = {"raw_text": resp.text}
+            # لا نوقف التنفيذ إذا فشل الحفظ
+            pass
 
         if resp.status_code == 200:
             # mark completed
@@ -511,19 +568,133 @@ COMPLEAT_PROFILE_LOG = os.path.join(os.path.dirname(__file__), "..", "compleatPr
 
 def save_complete_profile_log(url, body, response, headers, status_code):
     """
-    حفظ URL + BODY + RESPONSE + HEADERS + STATUS في ملف compleatProfile.json 
-    بنفس تنسيق المثال الذي طلبته المستخدم.
+    يحفظ الـ CompleteProfile.
     """
+    log_text = (
+        f"STATUS CODE {status_code}\n"
+        f"URL => {url}\n"
+        f"BODY => {json.dumps(body, ensure_ascii=False, indent=2)}\n"
+        f"RESPONSE => {json.dumps(response, ensure_ascii=False, indent=2)}\n"
+        f"HEADER => {json.dumps(headers, ensure_ascii=False, indent=2)}\n"
+        f"saved_at => {datetime.datetime.utcnow().isoformat()}Z\n"
+    )
 
+    # الكتابة كنص وليس JSON منسق
+    with open(COMPLEAT_PROFILE_LOG, "w", encoding="utf-8") as f:
+        f.write(log_text)
+
+# إضافة ثابت لمسار الملف المطلوب حفظه
+COMPLETE_PROFILE_SNAPSHOT = os.path.join(os.path.dirname(__file__), "..", "CompleteProfile.json")
+def prepare_complete_profile_payload() -> tuple[str, Dict[str, typing.Any]]:
+    """
+    يبني ويُرجع (url, body) لاستخدامها في حفظ لقطة CompleteProfile دون إرسال الطلب.
+    يعكس منطق بناء الـ body الموجود في complete_profile().
+    """
+    user_data = load_user_data()
+    contact_id = user_data.get("contactId") or user_data.get("contact_id") or ""
+    nationality_id = user_data.get("nationality_key") or user_data.get("nationalityId") or user_data.get("nationality_id") or ""
+    g = user_data.get("gender", "")
+    gender_map = {"ذكر": "1", "أنثى": "2", "male": "1", "female": "2", "m": "1", "f": "2"}
+    gender_val = gender_map.get(str(g).strip().lower(), str(g))
+
+    body = {
+        "contactId": contact_id,
+        "jobTitle": user_data.get("jobTitle") or "",
+        "email": user_data.get("email") or "",
+        "nationalityId": nationality_id,
+        "phoneNumber": user_data.get("phone") or "",
+        "otherMobilePhone": user_data.get("otherMobilePhone") or "",
+        "gender": gender_val,
+        "idNumber": user_data.get("national_id") or user_data.get("idNumber") or ""
+    }
+
+    step_id = _get_step_id_for_complete_profile()
+    url = f"https://erp.rnr.sa:8005/ar/api/Contact/CompleteProfile?serviceType=2&stepId={step_id}&stepType=2"
+    return url, body
+
+def save_complete_profile_snapshot(url: str, body: Dict[str, typing.Any],
+                                   response=None, headers=None, status_code=None) -> bool:
+    """
+    يحفظ URL و BODY و RESPONSE و HEADERS و STATUS في CompleteProfile.json
+    """
     payload = {
-        "STATUS": status_code,
         "URL": url,
         "BODY": body,
         "RESPONSE": response,
         "HEADERS": headers,
+        "STATUS_CODE": status_code,
         "saved_at": datetime.datetime.utcnow().isoformat() + "Z"
     }
 
-    # الكتابة بشكل جميل
-    with open(COMPLEAT_PROFILE_LOG, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    try:
+        tmp = COMPLETE_PROFILE_SNAPSHOT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        os.replace(tmp, COMPLETE_PROFILE_SNAPSHOT)
+        return True
+
+    except Exception as e:
+        print("⚠️ فشل حفظ CompleteProfile.json:", e)
+        return False
+
+def _sync_complete_profile_snapshot_with_fixed_package() -> bool:
+    """
+    If CompleteProfile.json exists, update its URL's stepId from fixedPackage.json (if present).
+    Returns True if an update was made.
+    """
+    try:
+        fp = _load_fixed_package()
+        step_id = fp.get("stepId") or fp.get("step_id") or ""
+        if not step_id:
+            return False
+
+        if not os.path.exists(COMPLETE_PROFILE_SNAPSHOT):
+            return False
+
+        with open(COMPLETE_PROFILE_SNAPSHOT, "r", encoding="utf-8") as f:
+            try:
+                payload = json.load(f)
+            except Exception:
+                return False
+
+        url = payload.get("URL") or ""
+        if not url:
+            return False
+
+        # Parse and replace stepId query param
+        try:
+            import urllib.parse as _up
+            parsed = _up.urlparse(url)
+            qs = _up.parse_qs(parsed.query)
+            qs['stepId'] = [step_id]
+            new_q = _up.urlencode(qs, doseq=True)
+            new_url = _up.urlunparse(parsed._replace(query=new_q))
+        except Exception:
+            # Fallback: naive replace of 'stepId=' value
+            if "stepId=" in url:
+                prefix, rest = url.split("stepId=", 1)
+                # keep everything after next '&' if exists
+                tail = ""
+                if "&" in rest:
+                    tail = "&" + rest.split("&", 1)[1]
+                new_url = f"{prefix}stepId={step_id}{tail}"
+            else:
+                return False
+
+        if new_url == url:
+            return False
+
+        payload['URL'] = new_url
+        tmp = COMPLETE_PROFILE_SNAPSHOT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as tf:
+            json.dump(payload, tf, ensure_ascii=False, indent=2)
+        os.replace(tmp, COMPLETE_PROFILE_SNAPSHOT)
+        print(f"✅ Updated CompleteProfile.json URL stepId -> {step_id}")
+        return True
+    except Exception as e:
+        print("⚠️ _sync_complete_profile_snapshot_with_fixed_package failed:", e)
+        return False
+
+# Run sync on import so existing CompleteProfile.json is updated from fixedPackage.json
+_try_sync = _sync_complete_profile_snapshot_with_fixed_package()

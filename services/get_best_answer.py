@@ -28,6 +28,8 @@ from .user_info_manager import (
     save_user_data,
     create_lead_hourly,
     complete_profile,   # <-- new import
+    prepare_complete_profile_payload,  # added
+    save_complete_profile_snapshot,    # added
 )
 from .user_info_manager import (
     fetch_housing_types,
@@ -151,7 +153,8 @@ def get_best_answer(user_input):
     if service_related:
         print(f"🔍 تم اكتشاف سؤال عن الخدمات: {user_input}")
         # لو بيانات المستخدم ناقصة، نسجل أن هناك إجراء معلق ثم نطلب البيانات المطلوبة
-        missing = [f for f in ["name", "phone", "email", "national_id", "gender", "city", "district"] if not user_data.get(f)]
+        # ask nationality before national_id
+        missing = [f for f in ["name", "phone", "email", "nationality", "national_id", "gender", "city", "district"] if not user_data.get(f)]
         if missing:
             # حفظ الإجراء المعلق حتى يتم ارسال البيانات
             update_user_info("pending_action", "services")
@@ -178,7 +181,7 @@ def get_best_answer(user_input):
             # user confirmed
             if normalized_yes:
                 # تأكد من توفر البيانات المطلوبة
-                missing = [f for f in ["name", "phone", "email", "national_id", "gender", "city", "district"] if not ud.get(f)]
+                missing = [f for f in ["name", "phone", "email", "nationality", "national_id", "gender", "city", "district"] if not ud.get(f)]
                 if missing:
                     msg, next_field = collect_user_info()
                     if msg:
@@ -211,7 +214,8 @@ def get_best_answer(user_input):
 
     # إذا المستخدم يرسل بيانات مطلوبة (الاسم، الهاتف، المدينة، الحي، الايميل، الهوية، النوع) فنسجلها
     # لا نعتبر المرسل يسأل عن الحقل اذا كتب كلمات مثل 'اسم' أو 'رقم' أو 'مدينة' أو 'حي' (سؤال)
-    for field in ["name", "phone", "email", "national_id", "gender", "city", "district"]:
+    # ensure nationality is processed before national_id
+    for field in ["name", "phone", "email", "nationality", "national_id", "gender", "city", "district"]:
         if not user_data.get(field):
             # تجاهل الإدخال إذا بدا أن المستخدم يطرح سؤالاً عن الحقل
             if len(user_input.strip().split()) >= 1 and not any(
@@ -321,6 +325,27 @@ def get_best_answer(user_input):
                 # 🔹 الحقول العادية (الاسم، الهاتف)
                 else:
                     update_user_info(field, user_input)
+
+                    # <-- جديد: فور حفظ النوع (ذكر/أنثى) نحضر ونخزن الـ URL+BODY في CompleteProfile.json
+                    if field == "gender":
+                        try:
+                            ud_after = load_user_data()
+                            gender_norm = str(ud_after.get("gender", "")).strip()
+                            if gender_norm in ("ذكر", "أنثى"):
+                                # build payload snapshot (url/body) then call complete_profile()
+                                url, body = prepare_complete_profile_payload()
+                                ok, status, resp_json = complete_profile()
+                                # complete_profile() does not return headers/url; save snapshot using prepared url/body
+                                save_complete_profile_snapshot(
+                                    url=url,
+                                    body=body,
+                                    response=resp_json,
+                                    headers=None,
+                                    status_code=status if isinstance(status, int) else None,
+                                )
+                        except Exception as e:
+                            LOGGER.warning("⚠️ فشل حفظ CompleteProfile snapshot بعد النوع: %s", e)
+
                     msg, next_field = collect_user_info()
                     if msg:
                         return msg
@@ -717,7 +742,7 @@ def get_best_answer(user_input):
         # إذا كل الحقول المطلوبة متوفرة ولم نكمل ملف المستخدم بعد، نحاول استدعاء CompleteProfile
         try:
             ud = load_user_data()
-            required = ["name", "phone", "email", "national_id", "gender", "city", "district", "contactId"]
+            required = ["name", "phone", "email", "nationality", "national_id", "gender", "city", "district", "contactId"]
             if not ud.get("profile_completed") and all(ud.get(k) for k in required):
                 ok, status, resp = complete_profile()
                 if ok:

@@ -1007,7 +1007,8 @@ def fetch_pricing_summary_with_ai(contract_date: str) -> str:
         return "⚠️ حدث خطأ أثناء تجهيز تفاصيل الباقة."
 def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Optional[Dict[str, Any]]:
     """
-    استدعاء API HourlyPricing بعد أن يختار المستخدم التاريخ واليوم المفضل.
+    استدعاء API HourlyPricing بعد أن يختار المستخدم التاريخ واليوم المفضل
+    ثم إنشاء العقد النهائي تلقائياً.
     """
     try:
         from .user_info_manager import load_user_data
@@ -1023,7 +1024,6 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
         contract_duration_num = (
             _extract_numeric_value(selected_pkg.get("contractDurationName"))
             or _extract_numeric_value(selected_pkg.get("contractDuration"))
-            or _extract_numeric_value(selected_pkg.get("contractDurationName"))
             or str(selected_pkg.get("contractDurationName") or "")
         )
 
@@ -1064,7 +1064,7 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
 
         resp = requests.post(url, params=params, json=body, timeout=10)
 
-        # Save a trace of this pricing call for debugging
+        # Save a trace for debugging
         try:
             trace_path = os.path.join(os.path.dirname(__file__), "..", "hourlyPricing.json")
             trace = {
@@ -1082,18 +1082,64 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
                 trace["response_text"] = resp.text
             _write_json_file(trace_path, trace)
             LOGGER.info("✅ حفظت نتيجة HourlyPricing في %s", trace_path)
-            # also append to unified HourlyPricing.json
+
+            # unified trace
             try:
                 unified = os.path.join(os.path.dirname(__file__), "..", "HourlyPricing.json")
                 _append_hourly_pricing_trace(unified, dict(trace))
-                LOGGER.info("✅ أضفت السجل إلى %s", unified)
             except Exception:
                 pass
-        except Exception as e:
-            LOGGER.warning("⚠️ خطأ عند حفظ نتيجة HourlyPricing: %s", e)
 
+        except Exception as e:
+            LOGGER.warning("⚠️ خطأ عند حفظ HourlyPricing: %s", e)
+
+        # -------------------------------
+        # ⚡ الخطوة الجديدة: إنشاء العقد
+        # -------------------------------
+        def create_contract(step_id_local):
+            try:
+                from .user_info_manager import load_user_data
+                ud_local = load_user_data()
+
+                url_c = f"https://erp.rnr.sa:8005/ar/api/HourlyContract/CreateContract?stepId={step_id_local}"
+
+                headers_c = {
+                    "Authorization": ud_local.get("auth_token"),
+                    "content-type": "application/json"
+                }
+
+                resp_c = requests.post(url_c, headers=headers_c, json=None, timeout=10)
+
+                # حفظ createContract.json
+                save_path = os.path.join(os.path.dirname(__file__), "..", "createContract.json")
+                trace_c = {
+                    "url": url_c,
+                    "status_code": resp_c.status_code,
+                    "response": None,
+                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                }
+
+                try:
+                    trace_c["response"] = resp_c.json()
+                except:
+                    trace_c["response"] = resp_c.text
+
+                _write_json_file(save_path, trace_c)
+
+                if resp_c.status_code == 200:
+                    return "🎉 تم إنشاء عقدك بنجاح"
+                else:
+                    return "⚠️ لم يتم إنشاء العقد."
+
+            except Exception as e:
+                return f"⚠️ خطأ أثناء إنشاء العقد: {e}"
+
+        # -------------------------------
+        # إذا التسعير نجح → ننشئ العقد
+        # -------------------------------
         if resp.status_code == 200:
-            return resp.json()
+            final_msg = create_contract(step_id)
+            return {"pricing": resp.json(), "contractMessage": final_msg}
         else:
             LOGGER.warning("⚠️ HourlyPricing API returned status: %s", resp.status_code)
             return None
@@ -1101,3 +1147,5 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
     except Exception as e:
         LOGGER.warning("⚠️ Error calling HourlyPricing API: %s", e)
         return None
+
+
