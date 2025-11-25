@@ -136,6 +136,13 @@ def write_fixed_package(updates: Dict[str, Any]) -> bool:
     pkg.update(updates)
     if _write_json_file(FIXED_PACKAGE_PATH, pkg):
         LOGGER.info("✅ تم حفظ البيانات في %s", FIXED_PACKAGE_PATH)
+        # NEW: إذا تم تحديث stepId، حدث CompleteProfile.json وأعد إرسال الطلب
+        if "stepId" in updates or "step_id" in updates:
+            try:
+                from .user_info_manager import on_fixed_package_stepid_updated
+                on_fixed_package_stepid_updated()
+            except Exception as e:
+                LOGGER.warning("⚠️ فشل تحديث CompleteProfile.json بعد تغيير stepId: %s", e)
         return True
     return False
 

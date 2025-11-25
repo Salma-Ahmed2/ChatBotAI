@@ -131,7 +131,7 @@ def update_user_info(field, value):
         # Update CompleteProfile snapshot body.nationalityId when possible
         try:
             # prepare payload and inject nationalityId (prefer saved key)
-            url, body = prepare_complete_profile_payload()
+            url, body = complete_profile()
             body["nationalityId"] = user_data.get("nationality_key") or user_data.get("nationalityId") or user_data.get("nationality_id") or v
             # save snapshot (response/headers/status_code left None for now)
             save_complete_profile_snapshot(url=url, body=body, response=None, headers=None, status_code=None)
@@ -585,18 +585,32 @@ def save_complete_profile_log(url, body, response, headers, status_code):
 
 # إضافة ثابت لمسار الملف المطلوب حفظه
 COMPLETE_PROFILE_SNAPSHOT = os.path.join(os.path.dirname(__file__), "..", "CompleteProfile.json")
-def prepare_complete_profile_payload() -> tuple[str, Dict[str, typing.Any]]:
-    """
-    يبني ويُرجع (url, body) لاستخدامها في حفظ لقطة CompleteProfile دون إرسال الطلب.
-    يعكس منطق بناء الـ body الموجود في complete_profile().
-    """
+def prepare_complete_profile_payload():
+    """تحضير URL + BODY بدون إرسال الطلب"""
     user_data = load_user_data()
-    contact_id = user_data.get("contactId") or user_data.get("contact_id") or ""
-    nationality_id = user_data.get("nationality_key") or user_data.get("nationalityId") or user_data.get("nationality_id") or ""
-    g = user_data.get("gender", "")
-    gender_map = {"ذكر": "1", "أنثى": "2", "male": "1", "female": "2", "m": "1", "f": "2"}
-    gender_val = gender_map.get(str(g).strip().lower(), str(g))
 
+    contact_id = user_data.get("contactId") or user_data.get("contact_id") or ""
+    nationality_id = (
+        user_data.get("nationality_key")
+        or user_data.get("nationalityId")
+        or user_data.get("nationality_id")
+        or ""
+    )
+
+    # تحويل النوع إلى رقم حسب API
+    gender_map = {"ذكر": "1", "أنثى": "2"}
+    gender_val = gender_map.get(str(user_data.get("gender", "")).strip(), "")
+
+    # هنا الخطير: جلب stepId من fixedPackage.json
+    step_id = _get_step_id_for_complete_profile()
+
+    # تجهيز URL النهائي
+    url = (
+        "https://erp.rnr.sa:8005/ar/api/Contact/CompleteProfile"
+        f"?serviceType=2&stepId={step_id}&stepType=2"
+    )
+
+    # تجهيز BODY
     body = {
         "contactId": contact_id,
         "jobTitle": user_data.get("jobTitle") or "",
@@ -605,11 +619,9 @@ def prepare_complete_profile_payload() -> tuple[str, Dict[str, typing.Any]]:
         "phoneNumber": user_data.get("phone") or "",
         "otherMobilePhone": user_data.get("otherMobilePhone") or "",
         "gender": gender_val,
-        "idNumber": user_data.get("national_id") or user_data.get("idNumber") or ""
+        "idNumber": user_data.get("national_id") or ""
     }
 
-    step_id = _get_step_id_for_complete_profile()
-    url = f"https://erp.rnr.sa:8005/ar/api/Contact/CompleteProfile?serviceType=2&stepId={step_id}&stepType=2"
     return url, body
 
 def save_complete_profile_snapshot(url: str, body: Dict[str, typing.Any],
@@ -698,3 +710,95 @@ def _sync_complete_profile_snapshot_with_fixed_package() -> bool:
 
 # Run sync on import so existing CompleteProfile.json is updated from fixedPackage.json
 _try_sync = _sync_complete_profile_snapshot_with_fixed_package()
+
+# NEW: Run update on stepId change (call this after fixedPackage.json is updated)
+def on_fixed_package_stepid_updated():
+    """
+    Call this after fixedPackage.json stepId is updated to sync CompleteProfile.json and re-send API.
+    """
+    _update_complete_profile_on_stepid_change()
+
+def _update_complete_profile_on_stepid_change():
+    """
+    Detects if stepId in fixedPackage.json has changed and updates CompleteProfile.json accordingly.
+    If changed, re-sends CompleteProfile API and updates CompleteProfile.json with new response.
+    """
+    try:
+        fp = _load_fixed_package()
+        new_step_id = fp.get("stepId") or fp.get("step_id") or ""
+        if not new_step_id:
+            return False
+
+        # Load CompleteProfile.json if exists
+        if not os.path.exists(COMPLETE_PROFILE_SNAPSHOT):
+            return False
+
+        with open(COMPLETE_PROFILE_SNAPSHOT, "r", encoding="utf-8") as f:
+            try:
+                payload = json.load(f)
+            except Exception:
+                return False
+
+        old_url = payload.get("URL") or ""
+        # Extract old stepId from URL
+        import urllib.parse as _up
+        parsed = _up.urlparse(old_url)
+        qs = _up.parse_qs(parsed.query)
+        old_step_id = qs.get("stepId", [""])[0]
+
+        if old_step_id == new_step_id:
+            return False  # No change
+
+        # Build new URL
+        qs['stepId'] = [new_step_id]
+        new_q = _up.urlencode(qs, doseq=True)
+        new_url = _up.urlunparse(parsed._replace(query=new_q))
+
+        # Prepare new payload and send CompleteProfile request
+        url, body = prepare_complete_profile_payload()
+        # Ensure URL uses new stepId
+        url = new_url
+
+        # Build headers
+        user_data = load_user_data()
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/plain, */*"}
+        auth = _ensure_auth_token_in_user_data()
+        if auth:
+            headers["Authorization"] = auth
+        if user_data.get("firebaseDeviceId"):
+            headers["firebaseDeviceId"] = user_data.get("firebaseDeviceId")
+        if user_data.get("playerId"):
+            headers["playerId"] = user_data.get("playerId")
+        if user_data.get("isOutSA") is not None:
+            headers["isOutSA"] = str(user_data.get("isOutSA")).lower()
+
+        # Send request
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=15)
+            try:
+                resp_json = resp.json()
+            except Exception:
+                resp_json = {"raw_text": resp.text}
+            status_code = resp.status_code
+        except Exception as e:
+            resp_json = {"error": str(e)}
+            status_code = None
+
+        # Save updated CompleteProfile.json
+        payload = {
+            "URL": url,
+            "BODY": body,
+            "RESPONSE": resp_json,
+            "HEADERS": headers,
+            "STATUS_CODE": status_code,
+            "saved_at": datetime.datetime.utcnow().isoformat() + "Z"
+        }
+        tmp = COMPLETE_PROFILE_SNAPSHOT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as tf:
+            json.dump(payload, tf, ensure_ascii=False, indent=2)
+        os.replace(tmp, COMPLETE_PROFILE_SNAPSHOT)
+        print(f"✅ Updated CompleteProfile.json after stepId change -> {new_step_id}")
+        return True
+    except Exception as e:
+        print("⚠️ _update_complete_profile_on_stepid_change failed:", e)
+        return False

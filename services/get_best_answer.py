@@ -345,7 +345,13 @@ def get_best_answer(user_input):
                                 )
                         except Exception as e:
                             LOGGER.warning("⚠️ فشل حفظ CompleteProfile snapshot بعد النوع: %s", e)
-
+                    if field == "stepId":
+                        try:
+                            url, body = prepare_complete_profile_payload()
+                            save_complete_profile_snapshot(url=url, body=body)
+                            print("🔵 تم تحديث CompleteProfile.json بعد تحديث stepId")
+                        except Exception as e:
+                            LOGGER.warning("⚠️ فشل حفظ Snapshot بعد stepId: %s", e)
                     msg, next_field = collect_user_info()
                     if msg:
                         return msg
