@@ -1101,8 +1101,83 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
             LOGGER.warning("⚠️ خطأ عند حفظ HourlyPricing: %s", e)
 
         # -------------------------------
-        # ⚡ الخطوة الجديدة: إنشاء العقد
+        # ⚡ الخطوة الجديدة: اختيار الباقة قبل إنشاء العقد
         # -------------------------------
+        def select_package(step_id_local):
+            # قراءة اليوم فقط من selected_days داخل user_data
+            from .user_info_manager import load_user_data
+            ud_local = load_user_data()
+
+            selected_days_list = ud_local.get("available_days", [])
+
+            # خذ أول يوم فقط (أو chosen_day لو لم يوجد شيء)
+            day_only = None
+            if selected_days_list and isinstance(selected_days_list, list):
+                # يأخذ dayName فقط (مثل: "Thursday")
+                day_only = selected_days_list[0].get("dayName")
+
+            # fallback
+            day_only = day_only or chosen_day
+
+            try:
+                from .user_info_manager import load_user_data
+                ud_local = load_user_data()
+                pkg = read_fixed_package()
+
+                url_s = f"https://erp.rnr.sa:8005/ar/api/HourlyContract/SelectPackage?stepId={step_id_local}"
+
+                headers_s = {
+                    "Authorization": ud_local.get("auth_token"),
+                    "content-type": "application/json"
+                }
+
+                # تجهيز الـ BODY من البيانات الحالية
+                body_s = {
+                    "hourlyPricingId": ud_local.get("selectedHourlyPricingId"),
+                    "resourceGroupId": pkg.get("nationality_key"),
+                    "serviceId": pkg.get("service_id"),
+                    "contractDuration": contract_duration_num,
+                    "hoursCount": pkg.get("selected_package", {}).get("visitHours"),
+                    "timeSlotId": ud_local.get("time_slot_keys", [None])[0],
+                    "empcount": empcount_num,
+                    "weeklyvisits": weeklyvisits_num,
+                    "visitShift": pkg.get("shift_key"),
+                    "promotionCode": selected_pkg.get("promotionCode"),
+                    "days": day_only, 
+                    "startDate": contract_start_date,     
+                    "extraVisits": None,
+                    "isQuestionerDone": True,
+                    "newShiftEndDate": None,
+                    "newShiftStartDate": None,
+                    "ContactPerson": None
+                }
+
+                resp_s = requests.post(url_s, headers=headers_s, json=body_s, timeout=10)
+
+                # حفظ selectPackage.json
+                save_path = os.path.join(os.path.dirname(__file__), "..", "selectPackage.json")
+                trace_s = {
+                    "url": url_s,
+                    "headers": headers_s,
+                    "body": body_s,
+                    "status_code": resp_s.status_code,
+                    "response": None,
+                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                }
+
+                try:
+                    trace_s["response"] = resp_s.json()
+                except:
+                    trace_s["response"] = resp_s.text
+
+                _write_json_file(save_path, trace_s)
+
+                return resp_s.status_code == 200
+
+            except Exception as e:
+                LOGGER.warning(f"⚠️ خطأ أثناء SelectPackage: {e}")
+                return False
+
         def create_contract(step_id_local):
             try:
                 from .user_info_manager import load_user_data
@@ -1117,10 +1192,11 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
 
                 resp_c = requests.post(url_c, headers=headers_c, json=None, timeout=10)
 
-                # حفظ createContract.json
+                # حفظ createContract.json مع إضافة headers
                 save_path = os.path.join(os.path.dirname(__file__), "..", "createContract.json")
                 trace_c = {
                     "url": url_c,
+                    "headers": headers_c,
                     "status_code": resp_c.status_code,
                     "response": None,
                     "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1142,17 +1218,20 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
                 return f"⚠️ خطأ أثناء إنشاء العقد: {e}"
 
         # -------------------------------
-        # إذا التسعير نجح → ننشئ العقد
+        # إذا التسعير نجح → ننفذ SelectPackage ثم CreateContract
         # -------------------------------
         if resp.status_code == 200:
-            final_msg = create_contract(step_id)
-            return {"pricing": resp.json(), "contractMessage": final_msg}
+            if select_package(step_id):
+                final_msg = create_contract(step_id)
+                return {"pricing": resp.json(), "contractMessage": final_msg}
+            else:
+                return {"pricing": resp.json(), "contractMessage": "⚠️ لم يتم اختيار الباقة بنجاح، لم يتم إنشاء العقد."}
         else:
             LOGGER.warning("⚠️ HourlyPricing API returned status: %s", resp.status_code)
             return None
 
     except Exception as e:
-        LOGGER.warning("⚠️ Error calling HourlyPricing API: %s", e)
+        LOGGER.warning("⚠️ Error calling HourlyPricing/SelectPackage/CreateContract API: %s", e)
         return None
 
 
