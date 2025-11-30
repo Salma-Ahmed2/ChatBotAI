@@ -395,10 +395,22 @@ def get_best_answer(user_input):
                         if not resp:
                             return "⚠️ فشل استدعاء ملخص الأسعار. حاول مرة أخرى لاحقاً."
 
-                        data = resp.get("data") if isinstance(resp, dict) else resp
+                        # If the pricing helper returned a contract message (SelectPackage+CreateContract flow),
+                        # surface that message to the user. The helper returns a dict like:
+                        # {"pricing": <pricing_json>, "contractMessage": "🎉 تم إنشاء عقدك بنجاح"}
+                        if isinstance(resp, dict) and resp.get("contractMessage"):
+                            return resp.get("contractMessage")
+
+                        # Otherwise extract pricing JSON and hourlyPackages as before
+                        data = None
+                        if isinstance(resp, dict) and resp.get("pricing"):
+                            data = resp.get("pricing")
+                        else:
+                            data = resp if isinstance(resp, dict) else None
+
                         packages = None
                         if isinstance(data, dict):
-                            packages = data.get("hourlyPackages")
+                            packages = data.get("data", {}).get("hourlyPackages") or data.get("hourlyPackages")
 
                         if packages:
                             try:

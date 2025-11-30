@@ -1012,6 +1012,22 @@ def fetch_pricing_summary_with_ai(contract_date: str) -> str:
     except Exception as e:
         LOGGER.warning(f"⚠️ خطأ في fetch_pricing_summary_with_ai: {e}")
         return "⚠️ حدث خطأ أثناء تجهيز تفاصيل الباقة."
+    from .user_info_manager import load_user_data
+import os, json
+
+def get_hourly_pricing_id():
+    path = os.path.join(os.path.dirname(__file__), "..", "hourlyPricing.json")
+    if not os.path.exists(path):
+        return None
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    try:
+        return data[0]["response_json"]["data"]["hourlyPackages"][0]["hourlypricingId"]
+    except:
+        return None
+
 def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Optional[Dict[str, Any]]:
     """
     استدعاء API HourlyPricing بعد أن يختار المستخدم التاريخ واليوم المفضل
@@ -1128,12 +1144,15 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
 
                 headers_s = {
                     "Authorization": ud_local.get("auth_token"),
-                    "content-type": "application/json"
+                    "content-type": "application/json",
+                    "source": "1",
+                    "version": "7.0.0",
+                    "platform": "android",
                 }
 
                 # تجهيز الـ BODY من البيانات الحالية
                 body_s = {
-                    "hourlyPricingId": ud_local.get("selectedHourlyPricingId"),
+                    "hourlyPricingId": get_hourly_pricing_id(),
                     "resourceGroupId": pkg.get("nationality_key"),
                     "serviceId": pkg.get("service_id"),
                     "contractDuration": contract_duration_num,
@@ -1142,10 +1161,10 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
                     "empcount": empcount_num,
                     "weeklyvisits": weeklyvisits_num,
                     "visitShift": pkg.get("shift_key"),
-                    "promotionCode": selected_pkg.get("promotionCode"),
+                    "promotionCode": pkg.get("promotionCodeDescription"),
                     "days": day_only, 
                     "startDate": contract_start_date,     
-                    "extraVisits": None,
+                    "extraVisits": 0,
                     "isQuestionerDone": True,
                     "newShiftEndDate": None,
                     "newShiftStartDate": None,
@@ -1187,7 +1206,10 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
 
                 headers_c = {
                     "Authorization": ud_local.get("auth_token"),
-                    "content-type": "application/json"
+                   "content-type": "application/json",
+                    "source": "1",
+                    "version": "7.0.0",
+                    "platform": "android",
                 }
 
                 resp_c = requests.post(url_c, headers=headers_c, json=None, timeout=10)
@@ -1210,7 +1232,16 @@ def call_hourly_pricing_api(contract_start_date: str, chosen_day: str) -> Option
                 _write_json_file(save_path, trace_c)
 
                 if resp_c.status_code == 200:
-                    return "🎉 تم إنشاء عقدك بنجاح"
+                    try:
+                        # حاول جلب الباقة المختارة من fixedPackage.json
+                        pkg_local = read_fixed_package()
+                        selected_pkg = pkg_local.get("selected_package", {})
+                        # استخدم الدالة الموجودة لعرض الباقة بشكل واضح
+                        details = format_single_package(selected_pkg)
+                        return f"🎉 تم إنشاء عقدك بنجاح\n\n{details}"
+                    except Exception:
+                        # في حال فشل أي شيء، نرجع رسالة النجاح الأساسية
+                        return "🎉 تم إنشاء عقدك بنجاح"
                 else:
                     return "⚠️ لم يتم إنشاء العقد."
 
